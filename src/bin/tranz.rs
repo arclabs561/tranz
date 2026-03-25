@@ -250,7 +250,7 @@ fn cmd_train(args: &[String]) {
             interned.test.len()
         );
         let all_triples = interned.all_triples();
-        let scorer: Box<dyn Scorer> = match model_type {
+        let scorer: Box<dyn Scorer + Sync> = match model_type {
             ModelType::TransE => Box::new(result.model.to_transe().unwrap()),
             ModelType::RotatE => Box::new(result.model.to_rotate().unwrap()),
             ModelType::ComplEx => Box::new(result.model.to_complex().unwrap()),
