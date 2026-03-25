@@ -59,7 +59,9 @@ TRAIN OPTIONS:
 
 #[cfg(not(feature = "candle"))]
 fn cmd_train(_args: &[str]) {
-    eprintln!("Training requires the 'candle' feature. Build with: cargo install tranz --features candle");
+    eprintln!(
+        "Training requires the 'candle' feature. Build with: cargo install tranz --features candle"
+    );
     std::process::exit(1);
 }
 
@@ -89,8 +91,14 @@ fn cmd_train(args: &[String]) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--data" => { i += 1; data_dir = Some(PathBuf::from(&args[i])); }
-            "--triples" => { i += 1; triples_file = Some(PathBuf::from(&args[i])); }
+            "--data" => {
+                i += 1;
+                data_dir = Some(PathBuf::from(&args[i]));
+            }
+            "--triples" => {
+                i += 1;
+                triples_file = Some(PathBuf::from(&args[i]));
+            }
             "--model" => {
                 i += 1;
                 model_type = match args[i].as_str() {
@@ -104,17 +112,48 @@ fn cmd_train(args: &[String]) {
                     }
                 };
             }
-            "--dim" => { i += 1; dim = args[i].parse().unwrap(); }
-            "--epochs" => { i += 1; epochs = args[i].parse().unwrap(); }
-            "--batch-size" => { i += 1; batch_size = args[i].parse().unwrap(); }
-            "--gamma" => { i += 1; gamma = args[i].parse().unwrap(); }
-            "--lr" => { i += 1; lr = args[i].parse().unwrap(); }
-            "--negatives" => { i += 1; num_negatives = args[i].parse().unwrap(); }
-            "--alpha" => { i += 1; alpha = args[i].parse().unwrap(); }
-            "--n3" => { i += 1; n3_reg = args[i].parse().unwrap(); }
-            "--reciprocals" => { reciprocals = true; }
-            "--output" => { i += 1; output_dir = PathBuf::from(&args[i]); }
-            "--eval" => { do_eval = true; }
+            "--dim" => {
+                i += 1;
+                dim = args[i].parse().unwrap();
+            }
+            "--epochs" => {
+                i += 1;
+                epochs = args[i].parse().unwrap();
+            }
+            "--batch-size" => {
+                i += 1;
+                batch_size = args[i].parse().unwrap();
+            }
+            "--gamma" => {
+                i += 1;
+                gamma = args[i].parse().unwrap();
+            }
+            "--lr" => {
+                i += 1;
+                lr = args[i].parse().unwrap();
+            }
+            "--negatives" => {
+                i += 1;
+                num_negatives = args[i].parse().unwrap();
+            }
+            "--alpha" => {
+                i += 1;
+                alpha = args[i].parse().unwrap();
+            }
+            "--n3" => {
+                i += 1;
+                n3_reg = args[i].parse().unwrap();
+            }
+            "--reciprocals" => {
+                reciprocals = true;
+            }
+            "--output" => {
+                i += 1;
+                output_dir = PathBuf::from(&args[i]);
+            }
+            "--eval" => {
+                do_eval = true;
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
@@ -206,7 +245,10 @@ fn cmd_train(args: &[String]) {
 
     // Optional evaluation.
     if do_eval && !interned.test.is_empty() {
-        eprintln!("Evaluating on test set ({} triples)...", interned.test.len());
+        eprintln!(
+            "Evaluating on test set ({} triples)...",
+            interned.test.len()
+        );
         let all_triples = interned.all_triples();
         let scorer: Box<dyn Scorer> = match model_type {
             ModelType::TransE => Box::new(result.model.to_transe().unwrap()),

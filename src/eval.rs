@@ -158,7 +158,11 @@ mod tests {
 
     impl Scorer for PerfectModel {
         fn score(&self, h: usize, _r: usize, t: usize) -> f32 {
-            if h == t { 0.0 } else { 10.0 }
+            if h == t {
+                0.0
+            } else {
+                10.0
+            }
         }
 
         fn num_entities(&self) -> usize {
@@ -231,7 +235,11 @@ mod tests {
         impl Scorer for SplitModel {
             fn score(&self, _h: usize, r: usize, t: usize) -> f32 {
                 if r == 0 {
-                    if t == 1 { 0.0 } else { 10.0 }
+                    if t == 1 {
+                        0.0
+                    } else {
+                        10.0
+                    }
                 } else {
                     // All entities score the same.
                     5.0
