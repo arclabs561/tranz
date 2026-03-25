@@ -20,7 +20,7 @@ thiserror = "2"
 
 [features]
 default = ["rand"]
-candle = ["dep:candle-core", "dep:candle-nn"]
+candle = ["dep:candle-core", "dep:candle-nn", "rand"]
 cuda = ["candle", "candle-core/cuda"]
 
 [dev-dependencies]

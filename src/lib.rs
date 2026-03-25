@@ -162,7 +162,7 @@ impl Scorer for TransE {
 /// Reference: Sun et al. (2019), "RotatE: Knowledge Graph Embedding by
 /// Relational Rotation in Complex Space."
 pub struct RotatE {
-    /// Entity embeddings as interleaved `[re, im, re, im, ...]`, length = dim * 2.
+    /// Entity embeddings: `[re_0..re_{dim-1}, im_0..im_{dim-1}]`, length = dim * 2.
     entities: Vec<Vec<f32>>,
     /// Relation angles, length = dim. The complex rotation is `(cos(angle), sin(angle))`.
     relation_angles: Vec<Vec<f32>>,
@@ -223,7 +223,7 @@ impl RotatE {
         }
     }
 
-    /// Entity embeddings (interleaved re/im).
+    /// Entity embeddings: `[re..., im...]` contiguous layout.
     pub fn entities(&self) -> &[Vec<f32>] {
         &self.entities
     }
@@ -244,20 +244,22 @@ impl RotatE {
     }
 
     /// Score a triple by `||h * r - t||_2` in complex space.
+    ///
+    /// Entity layout: first `dim` floats are real parts, next `dim` are imaginary.
     pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
         let h = &self.entities[head];
         let r = &self.relation_angles[relation];
         let t = &self.entities[tail];
+        let dim = self.dim;
 
         let mut dist_sq = 0.0_f64;
-        for i in 0..self.dim {
-            let h_re = h[2 * i] as f64;
-            let h_im = h[2 * i + 1] as f64;
+        for i in 0..dim {
+            let h_re = h[i] as f64;
+            let h_im = h[dim + i] as f64;
             let (r_sin, r_cos) = (r[i] as f64).sin_cos();
-            let t_re = t[2 * i] as f64;
-            let t_im = t[2 * i + 1] as f64;
+            let t_re = t[i] as f64;
+            let t_im = t[dim + i] as f64;
 
-            // h * r = (h_re * cos - h_im * sin, h_re * sin + h_im * cos)
             let hr_re = h_re * r_cos - h_im * r_sin;
             let hr_im = h_re * r_sin + h_im * r_cos;
 
@@ -297,9 +299,9 @@ impl Scorer for RotatE {
 /// Reference: Trouillon et al. (2016), "Complex Embeddings for Simple Link
 /// Prediction."
 pub struct ComplEx {
-    /// Entity embeddings as interleaved `[re, im, re, im, ...]`, length = dim * 2.
+    /// Entity embeddings: `[re_0..re_{dim-1}, im_0..im_{dim-1}]`, length = dim * 2.
     entities: Vec<Vec<f32>>,
-    /// Relation embeddings as interleaved `[re, im, ...]`, length = dim * 2.
+    /// Relation embeddings: `[re..., im...]`, length = dim * 2.
     relations: Vec<Vec<f32>>,
     /// Complex dimension.
     dim: usize,
@@ -338,12 +340,12 @@ impl ComplEx {
         }
     }
 
-    /// Entity embeddings (interleaved re/im).
+    /// Entity embeddings: `[re..., im...]` contiguous layout.
     pub fn entities(&self) -> &[Vec<f32>] {
         &self.entities
     }
 
-    /// Relation embeddings (interleaved re/im).
+    /// Relation embeddings: `[re..., im...]` contiguous layout.
     pub fn relations(&self) -> &[Vec<f32>] {
         &self.relations
     }
@@ -357,25 +359,26 @@ impl ComplEx {
     ///
     /// Higher = more likely. Use [`Scorer::score`] for the negated
     /// distance-compatible version.
+    ///
+    /// Entity/relation layout: first `dim` floats are real, next `dim` are imaginary.
     pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
         let h = &self.entities[head];
         let r = &self.relations[relation];
         let t = &self.entities[tail];
+        let dim = self.dim;
 
         let mut dot = 0.0_f64;
-        for i in 0..self.dim {
-            let h_re = h[2 * i] as f64;
-            let h_im = h[2 * i + 1] as f64;
-            let r_re = r[2 * i] as f64;
-            let r_im = r[2 * i + 1] as f64;
-            let t_re = t[2 * i] as f64;
-            let t_im = t[2 * i + 1] as f64;
+        for i in 0..dim {
+            let h_re = h[i] as f64;
+            let h_im = h[dim + i] as f64;
+            let r_re = r[i] as f64;
+            let r_im = r[dim + i] as f64;
+            let t_re = t[i] as f64;
+            let t_im = t[dim + i] as f64;
 
-            // h * r = (h_re*r_re - h_im*r_im, h_re*r_im + h_im*r_re)
             let hr_re = h_re * r_re - h_im * r_im;
             let hr_im = h_re * r_im + h_im * r_re;
 
-            // Re(hr * conj(t)) = hr_re * t_re + hr_im * t_im
             dot += hr_re * t_re + hr_im * t_im;
         }
         dot as f32
@@ -595,6 +598,29 @@ mod tests {
         let s = scorer.score(0, 0, 1);
         assert!(s.is_finite());
         assert!(s >= 0.0);
+    }
+
+    #[test]
+    fn rotate_contiguous_layout_dim2() {
+        use std::f32::consts::FRAC_PI_2;
+        // dim=2: entity layout is [re0, re1, im0, im1]
+        // Entity 0: (1+0i, 0+0i) -> [1, 0, 0, 0]
+        // Entity 1: (0+1i, 0+0i) -> [0, 0, 1, 0]
+        // Rotation by [pi/2, 0]: first component rotates 90 deg, second is identity.
+        // (1+0i) * (cos(pi/2)+i*sin(pi/2)) = 0+1i
+        // (0+0i) * (cos(0)+i*sin(0)) = 0+0i
+        // Result: (0+1i, 0+0i) -> matches entity 1.
+        let model = RotatE::from_vecs(
+            vec![
+                vec![1.0, 0.0, 0.0, 0.0], // entity 0: [re0=1, re1=0, im0=0, im1=0]
+                vec![0.0, 0.0, 1.0, 0.0], // entity 1: [re0=0, re1=0, im0=1, im1=0]
+            ],
+            vec![vec![FRAC_PI_2, 0.0]], // rotate first dim by 90 deg
+            2,
+            12.0,
+        );
+        let score = model.score_triple(0, 0, 1);
+        assert!(score < 1e-5, "expected ~0, got {score}");
     }
 
     // -- ComplEx ---------------------------------------------------------------
