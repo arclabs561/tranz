@@ -16,8 +16,15 @@
 //! same score as the target does *not* increase the rank. Only entities with
 //! strictly better (lower) scores count. This is equivalent to "best-case
 //! rank among tied entities."
+//!
+//! ## Parallelism
+//!
+//! Evaluation is parallelized across test triples via rayon. Each test triple
+//! is scored independently against all entities.
 
 use std::collections::{HashMap, HashSet};
+
+use rayon::prelude::*;
 
 use crate::Scorer;
 
@@ -53,8 +60,10 @@ pub struct EvalResult {
 /// - **Head prediction**: rank all entities `h'` by `score(h', r, t)`, filter known `(*, r, t)`.
 ///
 /// Returns zeroed [`Metrics`] if `test_triples` is empty.
+///
+/// Evaluation is parallelized across test triples via rayon.
 pub fn evaluate_link_prediction(
-    model: &dyn Scorer,
+    model: &(dyn Scorer + Sync),
     test_triples: &[(usize, usize, usize)],
     all_triples: &[(usize, usize, usize)],
     num_entities: usize,
@@ -67,7 +76,7 @@ pub fn evaluate_link_prediction(
 /// Same protocol as [`evaluate_link_prediction`], but also returns
 /// per-relation metrics keyed by relation ID.
 pub fn evaluate_link_prediction_detailed(
-    model: &dyn Scorer,
+    model: &(dyn Scorer + Sync),
     test_triples: &[(usize, usize, usize)],
     all_triples: &[(usize, usize, usize)],
     num_entities: usize,
@@ -81,42 +90,43 @@ pub fn evaluate_link_prediction_detailed(
 
     let known: HashSet<(usize, usize, usize)> = all_triples.iter().copied().collect();
 
-    // Collect (relation_id, rank) pairs for both head and tail prediction.
-    let mut rel_ranks: Vec<(usize, u32)> = Vec::with_capacity(test_triples.len() * 2);
+    // Parallel: each test triple produces two (relation, rank) pairs.
+    let rel_ranks: Vec<(usize, u32)> = test_triples
+        .par_iter()
+        .flat_map_iter(|&(h, r, t)| {
+            let target_score = model.score(h, r, t);
 
-    for &(h, r, t) in test_triples {
-        let target_score = model.score(h, r, t);
+            // Tail prediction.
+            let mut tail_rank = 1u32;
+            for t_prime in 0..num_entities {
+                if t_prime == t {
+                    continue;
+                }
+                if known.contains(&(h, r, t_prime)) {
+                    continue;
+                }
+                if model.score(h, r, t_prime) < target_score {
+                    tail_rank += 1;
+                }
+            }
 
-        // Tail prediction.
-        let mut rank = 1u32;
-        for t_prime in 0..num_entities {
-            if t_prime == t {
-                continue;
+            // Head prediction.
+            let mut head_rank = 1u32;
+            for h_prime in 0..num_entities {
+                if h_prime == h {
+                    continue;
+                }
+                if known.contains(&(h_prime, r, t)) {
+                    continue;
+                }
+                if model.score(h_prime, r, t) < target_score {
+                    head_rank += 1;
+                }
             }
-            if known.contains(&(h, r, t_prime)) {
-                continue;
-            }
-            if model.score(h, r, t_prime) < target_score {
-                rank += 1;
-            }
-        }
-        rel_ranks.push((r, rank));
 
-        // Head prediction.
-        let mut rank = 1u32;
-        for h_prime in 0..num_entities {
-            if h_prime == h {
-                continue;
-            }
-            if known.contains(&(h_prime, r, t)) {
-                continue;
-            }
-            if model.score(h_prime, r, t) < target_score {
-                rank += 1;
-            }
-        }
-        rel_ranks.push((r, rank));
-    }
+            [(r, tail_rank), (r, head_rank)]
+        })
+        .collect();
 
     // Aggregate metrics.
     let metrics = compute_metrics(&rel_ranks.iter().map(|&(_, rank)| rank).collect::<Vec<_>>());
@@ -230,7 +240,6 @@ mod tests {
 
     #[test]
     fn per_relation_breakdown() {
-        // Two relations: rel 0 gets perfect score, rel 1 gets worst.
         struct SplitModel;
         impl Scorer for SplitModel {
             fn score(&self, _h: usize, r: usize, t: usize) -> f32 {
@@ -241,7 +250,6 @@ mod tests {
                         10.0
                     }
                 } else {
-                    // All entities score the same.
                     5.0
                 }
             }
@@ -254,7 +262,6 @@ mod tests {
         let all = vec![(0, 0, 1), (0, 1, 1)];
         let result = evaluate_link_prediction_detailed(&SplitModel, &test, &all, 3);
 
-        // Relation 0 should have better MRR than relation 1.
         let r0 = result.per_relation[&0];
         let r1 = result.per_relation[&1];
         assert!(

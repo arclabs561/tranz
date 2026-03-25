@@ -476,7 +476,7 @@ pub fn train_with_validation(
         // Validation-based early stopping.
         if let Some(ref val) = validation {
             if config.eval_interval > 0 && (_epoch + 1) % config.eval_interval == 0 {
-                let scorer: Box<dyn crate::Scorer> = match model.model_type {
+                let scorer: Box<dyn crate::Scorer + Sync> = match model.model_type {
                     ModelType::TransE => Box::new(model.to_transe()?),
                     ModelType::RotatE => Box::new(model.to_rotate()?),
                     ModelType::ComplEx => Box::new(model.to_complex()?),
