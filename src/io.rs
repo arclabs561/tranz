@@ -151,6 +151,19 @@ pub fn import_embeddings(path: &Path) -> io::Result<(Vec<String>, Vec<Vec<f32>>)
     read_w2v_tsv(file)
 }
 
+/// Flatten `Vec<Vec<f32>>` into a contiguous row-major `Vec<f32>`.
+///
+/// Useful for handing off to FAISS, Qdrant, or any system expecting
+/// a flat `[f32]` matrix of shape `[num_rows, dim]`.
+pub fn flatten_matrix(vecs: &[Vec<f32>]) -> Vec<f32> {
+    let total: usize = vecs.iter().map(|v| v.len()).sum();
+    let mut flat = Vec::with_capacity(total);
+    for v in vecs {
+        flat.extend_from_slice(v);
+    }
+    flat
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
