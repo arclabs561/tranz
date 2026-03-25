@@ -31,6 +31,7 @@ jobs:
         if: matrix.lint
       - run: cargo test
       - run: cargo test --features candle
+        if: matrix.lint
       - run: cargo doc --features candle --no-deps
         if: matrix.lint
         env:
