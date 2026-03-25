@@ -14,6 +14,9 @@
 
 #![warn(missing_docs)]
 
+pub mod dataset;
+pub mod eval;
+
 /// Errors from tranz operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -25,9 +28,23 @@ pub enum Error {
         /// Actual dimension.
         actual: usize,
     },
+    /// IO error.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     /// Internal error.
     #[error("{0}")]
     Internal(String),
+}
+
+/// Trait for scoring knowledge graph triples.
+///
+/// Scores are distances: lower values indicate more likely triples.
+pub trait Scorer {
+    /// Score a triple `(head, relation, tail)`. Lower = more likely.
+    fn score(&self, head: usize, relation: usize, tail: usize) -> f32;
+
+    /// Number of entities in the model.
+    fn num_entities(&self) -> usize;
 }
 
 /// TransE: translational distance model.
@@ -68,7 +85,7 @@ impl TransE {
     }
 
     /// Score a triple (h, r, t). Lower = more likely.
-    pub fn score(&self, head: usize, relation: usize, tail: usize) -> f32 {
+    pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
         let h = &self.entities[head];
         let r = &self.relations[relation];
         let t = &self.entities[tail];
@@ -79,6 +96,16 @@ impl TransE {
             dist_sq += d * d;
         }
         dist_sq.sqrt()
+    }
+}
+
+impl Scorer for TransE {
+    fn score(&self, head: usize, relation: usize, tail: usize) -> f32 {
+        self.score_triple(head, relation, tail)
+    }
+
+    fn num_entities(&self) -> usize {
+        self.entities.len()
     }
 }
 
@@ -96,5 +123,14 @@ mod tests {
         let score = model.score(0, 0, 1);
         assert!(score.is_finite());
         assert!(score >= 0.0);
+    }
+
+    #[test]
+    fn transe_scorer_trait() {
+        let model = TransE::new(10, 3, 8);
+        let scorer: &dyn Scorer = &model;
+        assert_eq!(scorer.num_entities(), 10);
+        let s = scorer.score(0, 0, 1);
+        assert!(s.is_finite());
     }
 }
