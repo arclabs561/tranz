@@ -110,14 +110,22 @@ impl TrainableModel {
         let (entity_embeddings, relation_embeddings) = match config.model_type {
             ModelType::TransE => {
                 let scale = 6.0 / (dim as f64).sqrt();
-                let ent = Var::rand_f64(0.0 - scale, scale, (num_entities, dim), DType::F32, device)?;
-                let rel = Var::rand_f64(0.0 - scale, scale, (num_relations, dim), DType::F32, device)?;
+                let ent =
+                    Var::rand_f64(0.0 - scale, scale, (num_entities, dim), DType::F32, device)?;
+                let rel =
+                    Var::rand_f64(0.0 - scale, scale, (num_relations, dim), DType::F32, device)?;
                 (ent, rel)
             }
             ModelType::RotatE => {
                 // Entities: interleaved re/im, so dim*2 columns.
                 let ent_scale = gamma as f64 / (dim as f64).sqrt();
-                let ent = Var::rand_f64(-ent_scale, ent_scale, (num_entities, dim * 2), DType::F32, device)?;
+                let ent = Var::rand_f64(
+                    -ent_scale,
+                    ent_scale,
+                    (num_entities, dim * 2),
+                    DType::F32,
+                    device,
+                )?;
                 // Relations: angles in [-pi, pi].
                 let rel = Var::rand_f64(
                     -std::f64::consts::PI,
@@ -130,10 +138,16 @@ impl TrainableModel {
             }
             ModelType::ComplEx | ModelType::DistMult => {
                 let scale = (6.0 / dim as f64).sqrt();
-                let ent_cols = if config.model_type == ModelType::ComplEx { dim * 2 } else { dim };
+                let ent_cols = if config.model_type == ModelType::ComplEx {
+                    dim * 2
+                } else {
+                    dim
+                };
                 let rel_cols = ent_cols;
-                let ent = Var::rand_f64(-scale, scale, (num_entities, ent_cols), DType::F32, device)?;
-                let rel = Var::rand_f64(-scale, scale, (num_relations, rel_cols), DType::F32, device)?;
+                let ent =
+                    Var::rand_f64(-scale, scale, (num_entities, ent_cols), DType::F32, device)?;
+                let rel =
+                    Var::rand_f64(-scale, scale, (num_relations, rel_cols), DType::F32, device)?;
                 (ent, rel)
             }
         };
@@ -159,7 +173,10 @@ impl TrainableModel {
         tails: &Tensor,
     ) -> Result<Tensor> {
         let h = self.entity_embeddings.as_tensor().index_select(heads, 0)?;
-        let r = self.relation_embeddings.as_tensor().index_select(relations, 0)?;
+        let r = self
+            .relation_embeddings
+            .as_tensor()
+            .index_select(relations, 0)?;
         let t = self.entity_embeddings.as_tensor().index_select(tails, 0)?;
 
         match self.model_type {
@@ -210,18 +227,14 @@ impl TrainableModel {
     }
 
     /// Compute N3 regularization: `||h||_3^3 + ||r||_3^3 + ||t||_3^3`.
-    fn n3_penalty(
-        &self,
-        heads: &Tensor,
-        relations: &Tensor,
-        tails: &Tensor,
-    ) -> Result<Tensor> {
+    fn n3_penalty(&self, heads: &Tensor, relations: &Tensor, tails: &Tensor) -> Result<Tensor> {
         let h = self.entity_embeddings.as_tensor().index_select(heads, 0)?;
-        let r = self.relation_embeddings.as_tensor().index_select(relations, 0)?;
+        let r = self
+            .relation_embeddings
+            .as_tensor()
+            .index_select(relations, 0)?;
         let t = self.entity_embeddings.as_tensor().index_select(tails, 0)?;
-        let cube_norm = |x: &Tensor| -> Result<Tensor> {
-            x.abs()?.powf(3.0)?.mean_all()
-        };
+        let cube_norm = |x: &Tensor| -> Result<Tensor> { x.abs()?.powf(3.0)?.mean_all() };
         let penalty = (cube_norm(&h)? + cube_norm(&r)? + cube_norm(&t)?)?;
         Ok(penalty)
     }
@@ -307,7 +320,14 @@ pub fn train(
     config: &TrainConfig,
     device: &Device,
 ) -> Result<TrainResult> {
-    train_with_validation(train_triples, num_entities, num_relations, config, device, None)
+    train_with_validation(
+        train_triples,
+        num_entities,
+        num_relations,
+        config,
+        device,
+        None,
+    )
 }
 
 /// Train with optional validation-based early stopping.
@@ -392,33 +412,36 @@ pub fn train_with_validation(
             let half = Tensor::full(0.5_f32, (actual_bs, config.num_negatives), &model.device)?;
             let corrupt_head = corrupt_mask.lt(&half)?; // 1 where < 0.5
 
-            let heads_exp = heads.unsqueeze(1)?.expand((actual_bs, config.num_negatives))?;
-            let rels_exp = rels.unsqueeze(1)?.expand((actual_bs, config.num_negatives))?;
-            let tails_exp = tails.unsqueeze(1)?.expand((actual_bs, config.num_negatives))?;
+            let heads_exp = heads
+                .unsqueeze(1)?
+                .expand((actual_bs, config.num_negatives))?;
+            let rels_exp = rels
+                .unsqueeze(1)?
+                .expand((actual_bs, config.num_negatives))?;
+            let tails_exp = tails
+                .unsqueeze(1)?
+                .expand((actual_bs, config.num_negatives))?;
 
             // Where corrupt_head=1: use neg_entities as head, original tail.
             // Where corrupt_head=0: use original head, neg_entities as tail.
             let neg_heads = corrupt_head.where_cond(&neg_entities, &heads_exp)?;
             let neg_tails = corrupt_head.where_cond(&tails_exp, &neg_entities)?;
 
-            let neg_scores = model.score_batch(
-                &neg_heads.flatten_all()?,
-                &rels_exp.flatten_all()?,
-                &neg_tails.flatten_all()?,
-            )?
-            .reshape((actual_bs, config.num_negatives))?;
+            let neg_scores = model
+                .score_batch(
+                    &neg_heads.flatten_all()?,
+                    &rels_exp.flatten_all()?,
+                    &neg_tails.flatten_all()?,
+                )?
+                .reshape((actual_bs, config.num_negatives))?;
 
             // SANS weighting (detached -- no gradient through weights).
             let neg_weights = if alpha > 0.0 {
                 let scaled = (neg_scores.detach() * (-(alpha as f64)))?.detach();
                 candle_nn::ops::softmax(&scaled, D::Minus1)?
             } else {
-                Tensor::ones(
-                    (actual_bs, config.num_negatives),
-                    DType::F32,
-                    &model.device,
-                )?
-                .affine(1.0 / config.num_negatives as f64, 0.0)?
+                Tensor::ones((actual_bs, config.num_negatives), DType::F32, &model.device)?
+                    .affine(1.0 / config.num_negatives as f64, 0.0)?
             };
 
             // Loss: -log(sigma(gamma - pos_score)) - sum_i w_i * log(sigma(neg_score_i - gamma))
@@ -532,12 +555,7 @@ mod tests {
     #[test]
     fn train_transe_smoke() {
         let device = Device::Cpu;
-        let triples = vec![
-            (0, 0, 1),
-            (1, 0, 2),
-            (2, 1, 0),
-            (0, 1, 2),
-        ];
+        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 1, 0), (0, 1, 2)];
         let config = TrainConfig {
             model_type: ModelType::TransE,
             dim: 8,
@@ -627,9 +645,7 @@ mod tests {
     fn loss_decreases() {
         let device = Device::Cpu;
         // Enough data and epochs for loss to decrease.
-        let triples: Vec<_> = (0..20)
-            .map(|i| (i % 10, i % 3, (i + 1) % 10))
-            .collect();
+        let triples: Vec<_> = (0..20).map(|i| (i % 10, i % 3, (i + 1) % 10)).collect();
         let config = TrainConfig {
             model_type: ModelType::TransE,
             dim: 16,

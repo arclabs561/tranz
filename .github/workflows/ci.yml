@@ -14,7 +14,7 @@ jobs:
         include:
           - rust: stable
             lint: true
-          - rust: "1.75"
+          - rust: "1.85"
             lint: false
     steps:
       - uses: actions/checkout@v4

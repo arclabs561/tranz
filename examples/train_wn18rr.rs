@@ -35,7 +35,10 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--data" => { i += 1; data_path = PathBuf::from(&args[i]); }
+            "--data" => {
+                i += 1;
+                data_path = PathBuf::from(&args[i]);
+            }
             "--model" => {
                 i += 1;
                 model_type = match args[i].as_str() {
@@ -49,15 +52,41 @@ fn main() {
                     }
                 };
             }
-            "--dim" => { i += 1; dim = args[i].parse().unwrap(); }
-            "--epochs" => { i += 1; epochs = args[i].parse().unwrap(); }
-            "--batch-size" => { i += 1; batch_size = args[i].parse().unwrap(); }
-            "--gamma" => { i += 1; gamma = args[i].parse().unwrap(); }
-            "--lr" => { i += 1; lr = args[i].parse().unwrap(); }
-            "--negatives" => { i += 1; num_negatives = args[i].parse().unwrap(); }
-            "--alpha" => { i += 1; alpha = args[i].parse().unwrap(); }
-            "--n3" => { i += 1; n3_reg = args[i].parse().unwrap(); }
-            "--reciprocals" => { reciprocals = true; }
+            "--dim" => {
+                i += 1;
+                dim = args[i].parse().unwrap();
+            }
+            "--epochs" => {
+                i += 1;
+                epochs = args[i].parse().unwrap();
+            }
+            "--batch-size" => {
+                i += 1;
+                batch_size = args[i].parse().unwrap();
+            }
+            "--gamma" => {
+                i += 1;
+                gamma = args[i].parse().unwrap();
+            }
+            "--lr" => {
+                i += 1;
+                lr = args[i].parse().unwrap();
+            }
+            "--negatives" => {
+                i += 1;
+                num_negatives = args[i].parse().unwrap();
+            }
+            "--alpha" => {
+                i += 1;
+                alpha = args[i].parse().unwrap();
+            }
+            "--n3" => {
+                i += 1;
+                n3_reg = args[i].parse().unwrap();
+            }
+            "--reciprocals" => {
+                reciprocals = true;
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
@@ -133,7 +162,10 @@ fn main() {
     }
 
     // Evaluate on test set.
-    eprintln!("Evaluating on test set ({} triples)...", interned.test.len());
+    eprintln!(
+        "Evaluating on test set ({} triples)...",
+        interned.test.len()
+    );
     let all_triples = interned.all_triples();
     let num_entities = interned.num_entities();
 
@@ -145,14 +177,13 @@ fn main() {
         ModelType::DistMult => Box::new(result.model.to_distmult().unwrap()),
     };
 
-    let metrics = evaluate_link_prediction(
-        scorer.as_ref(),
-        &interned.test,
-        &all_triples,
-        num_entities,
-    );
+    let metrics =
+        evaluate_link_prediction(scorer.as_ref(), &interned.test, &all_triples, num_entities);
 
-    eprintln!("Evaluation complete in {:.1}s", eval_start.elapsed().as_secs_f32());
+    eprintln!(
+        "Evaluation complete in {:.1}s",
+        eval_start.elapsed().as_secs_f32()
+    );
     println!("MRR:      {:.4}", metrics.mrr);
     println!("Hits@1:   {:.4}", metrics.hits_at_1);
     println!("Hits@3:   {:.4}", metrics.hits_at_3);

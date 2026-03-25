@@ -55,12 +55,12 @@ pub fn read_w2v_tsv(reader: impl io::Read) -> io::Result<(Vec<String>, Vec<Vec<f
             format!("expected 'count dim' header, got: {header}"),
         ));
     }
-    let count: usize = parts[0].parse().map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("bad count: {e}"))
-    })?;
-    let dim: usize = parts[1].parse().map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("bad dim: {e}"))
-    })?;
+    let count: usize = parts[0]
+        .parse()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("bad count: {e}")))?;
+    let dim: usize = parts[1]
+        .parse()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("bad dim: {e}")))?;
 
     let mut names = Vec::with_capacity(count);
     let mut vecs = Vec::with_capacity(count);
