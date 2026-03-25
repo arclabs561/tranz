@@ -47,6 +47,10 @@ pub struct TrainConfig {
     /// Norm for distance-based models (TransE, RotatE). 1 = L1, 2 = L2.
     /// The RotatE reference implementation uses L1 for TransE.
     pub distance_norm: u32,
+    /// Apply subsampling weights based on entity frequency.
+    /// Downweights triples involving high-frequency entities.
+    /// Helps at convergence but can hurt during early training.
+    pub subsampling: bool,
     /// SANS adversarial temperature. 0 = uniform weighting.
     pub adversarial_temperature: f32,
     /// Learning rate.
@@ -80,6 +84,7 @@ impl Default for TrainConfig {
             num_negatives: 256,
             gamma: 12.0,
             distance_norm: 1,
+            subsampling: false,
             adversarial_temperature: 1.0,
             lr: 0.001,
             n3_reg: 0.0,
@@ -382,13 +387,17 @@ pub fn train_with_validation(
     let alpha = config.adversarial_temperature;
     let n3_coeff = config.n3_reg;
 
-    // Precompute entity frequency for subsampling weights.
-    // Weight = 1/sqrt(freq(h) + freq(t)), normalizing high-frequency entity pairs.
-    let mut entity_freq = vec![0u32; num_entities];
-    for &(h, _, t) in train_triples {
-        entity_freq[h] += 1;
-        entity_freq[t] += 1;
-    }
+    // Precompute entity frequency for optional subsampling weights.
+    let entity_freq = if config.subsampling {
+        let mut freq = vec![0u32; num_entities];
+        for &(h, _, t) in train_triples {
+            freq[h] += 1;
+            freq[t] += 1;
+        }
+        Some(freq)
+    } else {
+        None
+    };
 
     let mut losses = Vec::with_capacity(config.epochs);
     let mut shuffled: Vec<(usize, usize, usize)> = train_triples.to_vec();
@@ -490,14 +499,17 @@ pub fn train_with_validation(
             let neg_loss_per = log_sigmoid(&(neg_scores - gamma as f64)?)?;
             let weighted_neg_loss = (&neg_weights * &neg_loss_per)?.sum(D::Minus1)?.neg()?;
 
-            // Subsampling weight: downweight triples involving high-frequency entities.
-            let subsample_w: Vec<f32> = batch
-                .iter()
-                .map(|&(h, _, t)| 1.0 / ((entity_freq[h] + entity_freq[t]) as f32).sqrt())
-                .collect();
-            let subsample_t = Tensor::from_vec(subsample_w, actual_bs, &model.device)?;
             let per_triple_loss = (pos_loss + weighted_neg_loss)?;
-            let mut loss = (&per_triple_loss * &subsample_t)?.mean_all()?;
+            let mut loss = if let Some(ref freq) = entity_freq {
+                let subsample_w: Vec<f32> = batch
+                    .iter()
+                    .map(|&(h, _, t)| 1.0 / ((freq[h] + freq[t]) as f32).sqrt())
+                    .collect();
+                let subsample_t = Tensor::from_vec(subsample_w, actual_bs, &model.device)?;
+                (&per_triple_loss * &subsample_t)?.mean_all()?
+            } else {
+                per_triple_loss.mean_all()?
+            };
 
             // N3 regularization.
             if n3_coeff > 0.0 {
