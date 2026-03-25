@@ -145,6 +145,75 @@ pub fn load_dataset(path: &Path) -> Result<Dataset, crate::Error> {
     })
 }
 
+/// Load triples from a single TSV or CSV file.
+///
+/// Accepts tab-separated or comma-separated lines of `head relation tail`
+/// (or `head,relation,tail`). Skips blank lines and lines starting with `#`.
+///
+/// All triples go into the `train` split. Use [`Dataset::split`] to create
+/// validation and test splits.
+pub fn load_triples(path: &Path) -> Result<Dataset, crate::Error> {
+    let content = fs::read_to_string(path).map_err(|e| {
+        crate::Error::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        ))
+    })?;
+    let triples = parse_flexible(&content);
+    Ok(Dataset {
+        train: triples,
+        valid: Vec::new(),
+        test: Vec::new(),
+    })
+}
+
+fn parse_flexible(content: &str) -> Vec<Triple> {
+    content
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            // Try tab first, then comma.
+            let sep = if line.contains('\t') { '\t' } else { ',' };
+            let parts: Vec<&str> = line.split(sep).map(str::trim).collect();
+            if parts.len() >= 3 {
+                Some(Triple {
+                    head: parts[0].to_string(),
+                    relation: parts[1].to_string(),
+                    tail: parts[2].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+impl Dataset {
+    /// Split the training set into train/valid/test by ratio.
+    ///
+    /// `valid_frac` and `test_frac` are fractions of the total triples.
+    /// Remaining triples stay in train. Splits are deterministic
+    /// (takes from the end of the list).
+    pub fn split(mut self, valid_frac: f32, test_frac: f32) -> Self {
+        let total = self.train.len() + self.valid.len() + self.test.len();
+        // Gather all triples into train.
+        let mut all = std::mem::take(&mut self.train);
+        all.append(&mut self.valid);
+        all.append(&mut self.test);
+
+        let n_test = (total as f32 * test_frac).round() as usize;
+        let n_valid = (total as f32 * valid_frac).round() as usize;
+        let test = all.split_off(all.len().saturating_sub(n_test));
+        let valid = all.split_off(all.len().saturating_sub(n_valid));
+
+        Dataset {
+            train: all,
+            valid,
+            test,
+        }
+    }
+}
+
 impl Dataset {
     /// Convert to an interned dataset with integer IDs.
     ///
@@ -268,5 +337,48 @@ mod tests {
         let content = "A\tr1\tB\n\nC\tr2\tD\n";
         let triples = parse_triples(content);
         assert_eq!(triples.len(), 2);
+    }
+
+    #[test]
+    fn load_triples_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("triples.csv");
+        fs::write(&path, "# comment\nAlice,knows,Bob\nBob,works_at,Acme\n").unwrap();
+
+        let ds = load_triples(&path).unwrap();
+        assert_eq!(ds.train.len(), 2);
+        assert_eq!(ds.train[0].head, "Alice");
+        assert_eq!(ds.train[0].relation, "knows");
+        assert!(ds.valid.is_empty());
+        assert!(ds.test.is_empty());
+    }
+
+    #[test]
+    fn load_triples_tsv() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("triples.tsv");
+        fs::write(&path, "A\tr1\tB\nC\tr2\tD\n").unwrap();
+
+        let ds = load_triples(&path).unwrap();
+        assert_eq!(ds.train.len(), 2);
+    }
+
+    #[test]
+    fn dataset_split() {
+        let ds = Dataset {
+            train: (0..100)
+                .map(|i| Triple {
+                    head: format!("e{i}"),
+                    relation: "r".to_string(),
+                    tail: format!("e{}", i + 1),
+                })
+                .collect(),
+            valid: Vec::new(),
+            test: Vec::new(),
+        };
+        let ds = ds.split(0.1, 0.1);
+        assert_eq!(ds.test.len(), 10);
+        assert_eq!(ds.valid.len(), 10);
+        assert_eq!(ds.train.len(), 80);
     }
 }

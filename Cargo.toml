@@ -23,6 +23,15 @@ default = ["rand"]
 candle = ["dep:candle-core", "dep:candle-nn", "rand"]
 cuda = ["candle", "candle-core/cuda"]
 
+[[bin]]
+name = "tranz"
+path = "src/bin/tranz.rs"
+required-features = ["candle"]
+
+[[example]]
+name = "train_wn18rr"
+required-features = ["candle"]
+
 [dev-dependencies]
 proptest = "1.5"
 tempfile = "3"
