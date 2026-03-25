@@ -99,6 +99,7 @@ fn main() {
         n3_reg,
         batch_size,
         epochs,
+        ..TrainConfig::default()
     };
 
     eprintln!("Training {model_type:?} dim={dim} gamma={gamma} lr={lr} epochs={epochs}");

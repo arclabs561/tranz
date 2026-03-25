@@ -54,6 +54,11 @@ pub struct TrainConfig {
     pub batch_size: usize,
     /// Number of training epochs.
     pub epochs: usize,
+    /// Evaluate on validation set every N epochs. 0 = no validation.
+    pub eval_interval: usize,
+    /// Stop if validation MRR doesn't improve for this many eval cycles.
+    /// Only used when `eval_interval > 0`.
+    pub patience: usize,
 }
 
 impl Default for TrainConfig {
@@ -68,6 +73,8 @@ impl Default for TrainConfig {
             n3_reg: 0.0,
             batch_size: 512,
             epochs: 1000,
+            eval_interval: 0,
+            patience: 5,
         }
     }
 }
@@ -141,7 +148,7 @@ impl TrainableModel {
     ///
     /// For distance-based models (TransE, RotatE): returns distances (lower = more likely).
     /// For similarity-based models (ComplEx, DistMult): returns negative similarities.
-    fn score_batch(
+    pub fn score_batch(
         &self,
         heads: &Tensor,
         relations: &Tensor,
@@ -271,10 +278,22 @@ pub struct TrainResult {
     pub losses: Vec<f32>,
 }
 
+/// Validation data for early stopping.
+pub struct ValidationData<'a> {
+    /// Validation triples to evaluate.
+    pub valid_triples: &'a [(usize, usize, usize)],
+    /// All known triples (train + valid + test) for filtered evaluation.
+    pub all_triples: &'a [(usize, usize, usize)],
+}
+
 /// Train a KGE model on the given triples.
 ///
 /// `train_triples` is a slice of `(head, relation, tail)` ID triples.
 /// `num_entities` and `num_relations` define the vocabulary size.
+///
+/// If `validation` is provided and `config.eval_interval > 0`, evaluates
+/// on the validation set periodically and stops early if MRR doesn't
+/// improve for `config.patience` evaluation cycles.
 ///
 /// Returns the trained model and per-epoch loss history.
 pub fn train(
@@ -283,6 +302,18 @@ pub fn train(
     num_relations: usize,
     config: &TrainConfig,
     device: &Device,
+) -> Result<TrainResult> {
+    train_with_validation(train_triples, num_entities, num_relations, config, device, None)
+}
+
+/// Train with optional validation-based early stopping.
+pub fn train_with_validation(
+    train_triples: &[(usize, usize, usize)],
+    num_entities: usize,
+    num_relations: usize,
+    config: &TrainConfig,
+    device: &Device,
+    validation: Option<ValidationData<'_>>,
 ) -> Result<TrainResult> {
     let model = TrainableModel::new(num_entities, num_relations, config, device)?;
     let vars = vec![
@@ -306,6 +337,8 @@ pub fn train(
 
     let mut losses = Vec::with_capacity(config.epochs);
     let mut shuffled: Vec<(usize, usize, usize)> = train_triples.to_vec();
+    let mut best_mrr = f32::NEG_INFINITY;
+    let mut patience_counter = 0_usize;
 
     for _epoch in 0..config.epochs {
         let mut epoch_loss = 0.0_f64;
@@ -404,6 +437,38 @@ pub fn train(
         }
 
         losses.push((epoch_loss / n_batches as f64) as f32);
+
+        // Validation-based early stopping.
+        if let Some(ref val) = validation {
+            if config.eval_interval > 0 && (_epoch + 1) % config.eval_interval == 0 {
+                let scorer: Box<dyn crate::Scorer> = match model.model_type {
+                    ModelType::TransE => Box::new(model.to_transe()?),
+                    ModelType::RotatE => Box::new(model.to_rotate()?),
+                    ModelType::ComplEx => Box::new(model.to_complex()?),
+                    ModelType::DistMult => Box::new(model.to_distmult()?),
+                };
+                let metrics = crate::eval::evaluate_link_prediction(
+                    scorer.as_ref(),
+                    val.valid_triples,
+                    val.all_triples,
+                    num_entities,
+                );
+                if metrics.mrr > best_mrr {
+                    best_mrr = metrics.mrr;
+                    patience_counter = 0;
+                } else {
+                    patience_counter += 1;
+                    if patience_counter >= config.patience {
+                        eprintln!(
+                            "Early stopping at epoch {} (best MRR: {:.4})",
+                            _epoch + 1,
+                            best_mrr,
+                        );
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     Ok(TrainResult { model, losses })
@@ -471,6 +536,7 @@ mod tests {
             n3_reg: 0.0,
             batch_size: 4,
             epochs: 5,
+            ..TrainConfig::default()
         };
         let result = train(&triples, 3, 2, &config, &device).unwrap();
         assert_eq!(result.losses.len(), 5);
@@ -493,6 +559,7 @@ mod tests {
             n3_reg: 0.0,
             batch_size: 2,
             epochs: 3,
+            ..TrainConfig::default()
         };
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
@@ -514,6 +581,7 @@ mod tests {
             n3_reg: 0.001,
             batch_size: 2,
             epochs: 3,
+            ..TrainConfig::default()
         };
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
@@ -535,6 +603,7 @@ mod tests {
             n3_reg: 0.0,
             batch_size: 2,
             epochs: 3,
+            ..TrainConfig::default()
         };
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
@@ -559,6 +628,7 @@ mod tests {
             n3_reg: 0.0,
             batch_size: 10,
             epochs: 50,
+            ..TrainConfig::default()
         };
         let result = train(&triples, 10, 3, &config, &device).unwrap();
         let first = result.losses[0];

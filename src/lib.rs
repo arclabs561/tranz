@@ -23,6 +23,7 @@
 
 pub mod dataset;
 pub mod eval;
+pub mod io;
 #[cfg(feature = "candle")]
 pub mod train;
 
@@ -53,6 +54,50 @@ pub trait Scorer {
 
     /// Number of entities in the model.
     fn num_entities(&self) -> usize;
+
+    /// Score all entities as tail replacements for `(head, relation, ?)`.
+    ///
+    /// Returns a vec of length `num_entities()` where index `t` holds
+    /// `score(head, relation, t)`.
+    fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
+        (0..self.num_entities())
+            .map(|t| self.score(head, relation, t))
+            .collect()
+    }
+
+    /// Score all entities as head replacements for `(?, relation, tail)`.
+    fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
+        (0..self.num_entities())
+            .map(|h| self.score(h, relation, tail))
+            .collect()
+    }
+
+    /// Return the top-k entities by score for `(head, relation, ?)`.
+    ///
+    /// Returns `(entity_id, score)` pairs sorted by score ascending
+    /// (best first, since lower = more likely).
+    fn top_k_tails(&self, head: usize, relation: usize, k: usize) -> Vec<(usize, f32)> {
+        let mut scored: Vec<(usize, f32)> = self
+            .score_all_tails(head, relation)
+            .into_iter()
+            .enumerate()
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        scored
+    }
+
+    /// Return the top-k entities by score for `(?, relation, tail)`.
+    fn top_k_heads(&self, relation: usize, tail: usize, k: usize) -> Vec<(usize, f32)> {
+        let mut scored: Vec<(usize, f32)> = self
+            .score_all_heads(relation, tail)
+            .into_iter()
+            .enumerate()
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        scored
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -694,5 +739,35 @@ mod tests {
         let raw = model.score_triple(0, 0, 1);
         let via_scorer = model.score(0, 0, 1);
         assert!((via_scorer - (-raw)).abs() < 1e-6);
+    }
+
+    // -- Batch scoring --------------------------------------------------------
+
+    #[test]
+    fn score_all_tails_length() {
+        let model = TransE::new(10, 3, 8);
+        let scores = model.score_all_tails(0, 0);
+        assert_eq!(scores.len(), 10);
+        assert!(scores.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn top_k_tails_sorted() {
+        let model = TransE::new(20, 3, 8);
+        let top = model.top_k_tails(0, 0, 5);
+        assert_eq!(top.len(), 5);
+        for w in top.windows(2) {
+            assert!(w[0].1 <= w[1].1, "top_k should be sorted ascending");
+        }
+    }
+
+    #[test]
+    fn top_k_heads_sorted() {
+        let model = TransE::new(20, 3, 8);
+        let top = model.top_k_heads(0, 0, 5);
+        assert_eq!(top.len(), 5);
+        for w in top.windows(2) {
+            assert!(w[0].1 <= w[1].1);
+        }
     }
 }
