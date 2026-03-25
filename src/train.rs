@@ -44,6 +44,9 @@ pub struct TrainConfig {
     pub num_negatives: usize,
     /// Margin gamma for the loss function.
     pub gamma: f32,
+    /// Norm for distance-based models (TransE, RotatE). 1 = L1, 2 = L2.
+    /// The RotatE reference implementation uses L1 for TransE.
+    pub distance_norm: u32,
     /// SANS adversarial temperature. 0 = uniform weighting.
     pub adversarial_temperature: f32,
     /// Learning rate.
@@ -76,6 +79,7 @@ impl Default for TrainConfig {
             dim: 200,
             num_negatives: 256,
             gamma: 12.0,
+            distance_norm: 1,
             adversarial_temperature: 1.0,
             lr: 0.001,
             n3_reg: 0.0,
@@ -100,6 +104,7 @@ pub struct TrainableModel {
     model_type: ModelType,
     dim: usize,
     gamma: f32,
+    distance_norm: u32,
     device: Device,
 }
 
@@ -165,6 +170,7 @@ impl TrainableModel {
             model_type: config.model_type,
             dim,
             gamma,
+            distance_norm: config.distance_norm,
             device: device.clone(),
         })
     }
@@ -188,9 +194,11 @@ impl TrainableModel {
 
         match self.model_type {
             ModelType::TransE => {
-                // ||h + r - t||_2
                 let diff = ((h + r)? - t)?;
-                diff.sqr()?.sum(D::Minus1)?.sqrt()
+                match self.distance_norm {
+                    1 => diff.abs()?.sum(D::Minus1),
+                    _ => diff.sqr()?.sum(D::Minus1)?.sqrt(),
+                }
             }
             ModelType::RotatE => {
                 // Split into re/im pairs.
@@ -207,8 +215,16 @@ impl TrainableModel {
                 let hr_im = ((&h_re * &r_sin)? + (&h_im * &r_cos)?)?;
                 let d_re = (hr_re - t_re)?;
                 let d_im = (hr_im - t_im)?;
-                let dist_sq = (d_re.sqr()? + d_im.sqr()?)?;
-                dist_sq.sum(D::Minus1)?.sqrt()
+                match self.distance_norm {
+                    1 => {
+                        let dist = (d_re.abs()? + d_im.abs()?)?;
+                        dist.sum(D::Minus1)
+                    }
+                    _ => {
+                        let dist_sq = (d_re.sqr()? + d_im.sqr()?)?;
+                        dist_sq.sum(D::Minus1)?.sqrt()
+                    }
+                }
             }
             ModelType::ComplEx => {
                 let dim = self.dim;
