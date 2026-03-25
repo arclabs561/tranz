@@ -6,7 +6,7 @@ Entities are points in vector space. Relations are transformations (translation,
 
 ```toml
 [dependencies]
-tranz = "0.2.0"
+tranz = "0.2.1"
 ```
 
 Dual-licensed under MIT or Apache-2.0.
@@ -32,6 +32,9 @@ tranz train --triples data.tsv --model rotate --dim 200 --epochs 500 --output em
 tranz train --data data/WN18RR/ --model transe --dim 200 --epochs 500 --output embeddings/ --eval
 
 # Output: embeddings/entities.tsv, embeddings/relations.tsv (w2v format)
+
+# Predict from saved embeddings
+tranz predict --embeddings embeddings/ --model transe --head "aspirin" --relation "treats" --k 10
 ```
 
 ## Library usage
