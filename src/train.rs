@@ -688,4 +688,37 @@ mod tests {
             "Loss should decrease: first={first}, last={last}"
         );
     }
+
+    #[test]
+    fn transe_achieves_nonzero_mrr_on_trivial_graph() {
+        // 5 entities, 1 relation: 0->1, 1->2, 2->3, 3->4.
+        // After training, score(0,0,1) should be the best among all tails.
+        let device = Device::Cpu;
+        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 0, 3), (3, 0, 4)];
+        let config = TrainConfig {
+            model_type: ModelType::TransE,
+            dim: 32,
+            num_negatives: 4,
+            gamma: 6.0,
+            adversarial_temperature: 0.0,
+            lr: 0.01,
+            n3_reg: 0.0,
+            batch_size: 4,
+            epochs: 200,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 5, 1, &config, &device).unwrap();
+        let model = result.model.to_transe().unwrap();
+
+        let metrics = crate::eval::evaluate_link_prediction(&model, &triples, &triples, 5);
+        assert!(
+            metrics.mrr > 0.5,
+            "TransE should achieve MRR > 0.5 on trivial graph, got {:.4}",
+            metrics.mrr
+        );
+        assert!(
+            metrics.hits_at_1 > 0.0,
+            "TransE should have nonzero Hits@1 on trivial graph"
+        );
+    }
 }
