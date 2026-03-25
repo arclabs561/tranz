@@ -151,18 +151,31 @@ pub fn import_embeddings(path: &Path) -> io::Result<(Vec<String>, Vec<Vec<f32>>)
     read_w2v_tsv(file)
 }
 
+/// Loaded entity and relation embeddings.
+pub struct LoadedEmbeddings {
+    /// Entity names in row order.
+    pub entity_names: Vec<String>,
+    /// Entity embedding vectors.
+    pub entity_vecs: Vec<Vec<f32>>,
+    /// Relation names in row order.
+    pub relation_names: Vec<String>,
+    /// Relation embedding vectors.
+    pub relation_vecs: Vec<Vec<f32>>,
+}
+
 /// Load entity and relation embeddings from a directory.
 ///
 /// Expects `entities.tsv` and `relations.tsv` in w2v format (as written
 /// by [`export_embeddings`]).
-///
-/// Returns `(entity_names, entity_vecs, relation_names, relation_vecs)`.
-pub fn load_embeddings(
-    dir: &Path,
-) -> io::Result<(Vec<String>, Vec<Vec<f32>>, Vec<String>, Vec<Vec<f32>>)> {
-    let (ent_names, ent_vecs) = import_embeddings(&dir.join("entities.tsv"))?;
-    let (rel_names, rel_vecs) = import_embeddings(&dir.join("relations.tsv"))?;
-    Ok((ent_names, ent_vecs, rel_names, rel_vecs))
+pub fn load_embeddings(dir: &Path) -> io::Result<LoadedEmbeddings> {
+    let (entity_names, entity_vecs) = import_embeddings(&dir.join("entities.tsv"))?;
+    let (relation_names, relation_vecs) = import_embeddings(&dir.join("relations.tsv"))?;
+    Ok(LoadedEmbeddings {
+        entity_names,
+        entity_vecs,
+        relation_names,
+        relation_vecs,
+    })
 }
 
 /// Flatten `Vec<Vec<f32>>` into a contiguous row-major `Vec<f32>`.
@@ -227,11 +240,11 @@ mod tests {
 
         export_embeddings(dir.path(), &ent_names, &ent_vecs, &rel_names, &rel_vecs).unwrap();
 
-        let (en, ev, rn, rv) = load_embeddings(dir.path()).unwrap();
-        assert_eq!(en, ent_names);
-        assert_eq!(rn, rel_names);
-        assert_eq!(ev.len(), 2);
-        assert_eq!(rv.len(), 1);
+        let loaded = load_embeddings(dir.path()).unwrap();
+        assert_eq!(loaded.entity_names, ent_names);
+        assert_eq!(loaded.relation_names, rel_names);
+        assert_eq!(loaded.entity_vecs.len(), 2);
+        assert_eq!(loaded.relation_vecs.len(), 1);
     }
 
     #[test]
