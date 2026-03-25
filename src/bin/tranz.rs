@@ -237,6 +237,7 @@ fn cmd_train(args: &[String]) {
     let mut num_negatives = 256_usize;
     let mut alpha = 1.0_f32;
     let mut n3_reg = 0.0_f32;
+    let mut distance_norm = 1_u32;
     let mut reciprocals = false;
     let mut normalize = false;
     let mut warmup = 0_usize;
@@ -299,6 +300,10 @@ fn cmd_train(args: &[String]) {
             "--n3" => {
                 i += 1;
                 n3_reg = args[i].parse().unwrap();
+            }
+            "--norm" => {
+                i += 1;
+                distance_norm = args[i].parse().unwrap();
             }
             "--reciprocals" => {
                 reciprocals = true;
@@ -372,6 +377,7 @@ fn cmd_train(args: &[String]) {
         adversarial_temperature: alpha,
         lr,
         n3_reg,
+        distance_norm,
         batch_size,
         epochs,
         normalize_entities: normalize,
