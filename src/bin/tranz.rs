@@ -265,6 +265,8 @@ fn cmd_train(args: &[String]) {
 
     // Optional evaluation.
     if do_eval && !interned.test.is_empty() {
+        use tranz::eval::evaluate_link_prediction_detailed;
+
         eprintln!(
             "Evaluating on test set ({} triples)...",
             interned.test.len()
@@ -276,15 +278,34 @@ fn cmd_train(args: &[String]) {
             ModelType::ComplEx => Box::new(result.model.to_complex().unwrap()),
             ModelType::DistMult => Box::new(result.model.to_distmult().unwrap()),
         };
-        let metrics = evaluate_link_prediction(
+        let result = evaluate_link_prediction_detailed(
             scorer.as_ref(),
             &interned.test,
             &all_triples,
             interned.num_entities(),
         );
-        println!("MRR:      {:.4}", metrics.mrr);
-        println!("Hits@1:   {:.4}", metrics.hits_at_1);
-        println!("Hits@3:   {:.4}", metrics.hits_at_3);
-        println!("Hits@10:  {:.4}", metrics.hits_at_10);
+        let m = result.metrics;
+        println!("MRR:      {:.4}", m.mrr);
+        println!("Hits@1:   {:.4}", m.hits_at_1);
+        println!("Hits@3:   {:.4}", m.hits_at_3);
+        println!("Hits@10:  {:.4}", m.hits_at_10);
+
+        if !result.per_relation.is_empty() {
+            println!();
+            println!("Per-relation MRR:");
+            let mut rels: Vec<_> = result.per_relation.iter().collect();
+            rels.sort_by_key(|&(id, _)| *id);
+            for (&rel_id, metrics) in &rels {
+                let name = interned
+                    .id_to_relation
+                    .get(rel_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+                println!(
+                    "  {name:<30} MRR={:.4}  H@10={:.4}",
+                    metrics.mrr, metrics.hits_at_10
+                );
+            }
+        }
     }
 }

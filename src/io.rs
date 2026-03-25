@@ -151,6 +151,20 @@ pub fn import_embeddings(path: &Path) -> io::Result<(Vec<String>, Vec<Vec<f32>>)
     read_w2v_tsv(file)
 }
 
+/// Load entity and relation embeddings from a directory.
+///
+/// Expects `entities.tsv` and `relations.tsv` in w2v format (as written
+/// by [`export_embeddings`]).
+///
+/// Returns `(entity_names, entity_vecs, relation_names, relation_vecs)`.
+pub fn load_embeddings(
+    dir: &Path,
+) -> io::Result<(Vec<String>, Vec<Vec<f32>>, Vec<String>, Vec<Vec<f32>>)> {
+    let (ent_names, ent_vecs) = import_embeddings(&dir.join("entities.tsv"))?;
+    let (rel_names, rel_vecs) = import_embeddings(&dir.join("relations.tsv"))?;
+    Ok((ent_names, ent_vecs, rel_names, rel_vecs))
+}
+
 /// Flatten `Vec<Vec<f32>>` into a contiguous row-major `Vec<f32>`.
 ///
 /// Useful for handing off to FAISS, Qdrant, or any system expecting
@@ -201,5 +215,29 @@ mod tests {
         assert_eq!(buf.len(), 4 * 4); // 4 floats * 4 bytes
         let first = f32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         assert!((first - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn export_import_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let ent_names = vec!["a".to_string(), "b".to_string()];
+        let ent_vecs = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        let rel_names = vec!["r1".to_string()];
+        let rel_vecs = vec![vec![0.5, 0.5]];
+
+        export_embeddings(dir.path(), &ent_names, &ent_vecs, &rel_names, &rel_vecs).unwrap();
+
+        let (en, ev, rn, rv) = load_embeddings(dir.path()).unwrap();
+        assert_eq!(en, ent_names);
+        assert_eq!(rn, rel_names);
+        assert_eq!(ev.len(), 2);
+        assert_eq!(rv.len(), 1);
+    }
+
+    #[test]
+    fn flatten_matrix_works() {
+        let vecs = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        let flat = flatten_matrix(&vecs);
+        assert_eq!(flat, vec![1.0, 2.0, 3.0, 4.0]);
     }
 }
