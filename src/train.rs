@@ -366,6 +366,14 @@ pub fn train_with_validation(
     let alpha = config.adversarial_temperature;
     let n3_coeff = config.n3_reg;
 
+    // Precompute entity frequency for subsampling weights.
+    // Weight = 1/sqrt(freq(h) + freq(t)), normalizing high-frequency entity pairs.
+    let mut entity_freq = vec![0u32; num_entities];
+    for &(h, _, t) in train_triples {
+        entity_freq[h] += 1;
+        entity_freq[t] += 1;
+    }
+
     let mut losses = Vec::with_capacity(config.epochs);
     let mut shuffled: Vec<(usize, usize, usize)> = train_triples.to_vec();
     let mut best_mrr = f32::NEG_INFINITY;
@@ -466,7 +474,14 @@ pub fn train_with_validation(
             let neg_loss_per = log_sigmoid(&(neg_scores - gamma as f64)?)?;
             let weighted_neg_loss = (&neg_weights * &neg_loss_per)?.sum(D::Minus1)?.neg()?;
 
-            let mut loss = (pos_loss + weighted_neg_loss)?.mean_all()?;
+            // Subsampling weight: downweight triples involving high-frequency entities.
+            let subsample_w: Vec<f32> = batch
+                .iter()
+                .map(|&(h, _, t)| 1.0 / ((entity_freq[h] + entity_freq[t]) as f32).sqrt())
+                .collect();
+            let subsample_t = Tensor::from_vec(subsample_w, actual_bs, &model.device)?;
+            let per_triple_loss = (pos_loss + weighted_neg_loss)?;
+            let mut loss = (&per_triple_loss * &subsample_t)?.mean_all()?;
 
             // N3 regularization.
             if n3_coeff > 0.0 {
