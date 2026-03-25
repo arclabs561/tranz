@@ -16,13 +16,15 @@
 //! ## Feature flags
 //!
 //! - **`rand`** (default): enables random initialization via `Model::new()`.
-//! - **`candle`**: enables GPU training via the candle backend (not yet wired).
+//! - **`candle`**: enables GPU training via the [`train`] module.
 //! - **`cuda`**: implies `candle`, enables CUDA acceleration.
 
 #![warn(missing_docs)]
 
 pub mod dataset;
 pub mod eval;
+#[cfg(feature = "candle")]
+pub mod train;
 
 /// Errors from tranz operations.
 #[derive(Debug, thiserror::Error)]

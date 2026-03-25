@@ -67,6 +67,41 @@ impl InternedDataset {
         all.extend_from_slice(&self.test);
         all
     }
+
+    /// Add reciprocal (inverse) relations.
+    ///
+    /// For each original relation `r` with ID `i`, creates a new relation
+    /// `r_inv` with ID `num_relations + i`. For each triple `(h, r, t)`,
+    /// adds `(t, r_inv, h)` to the same split.
+    ///
+    /// This consistently improves all models (Ali et al., 2022 / PyKEEN).
+    pub fn add_reciprocals(&mut self) {
+        let n_rel = self.id_to_relation.len();
+
+        // Add inverse relation names.
+        let inv_names: Vec<String> = self
+            .id_to_relation
+            .iter()
+            .map(|name| format!("{name}_inv"))
+            .collect();
+        for name in &inv_names {
+            let id = self.id_to_relation.len();
+            self.relation_to_id.insert(name.clone(), id);
+            self.id_to_relation.push(name.clone());
+        }
+
+        // Add reciprocal triples to each split.
+        fn augment(triples: &mut Vec<(usize, usize, usize)>, n_rel: usize) {
+            let originals: Vec<_> = triples.clone();
+            triples.reserve(originals.len());
+            for &(h, r, t) in &originals {
+                triples.push((t, r + n_rel, h));
+            }
+        }
+        augment(&mut self.train, n_rel);
+        augment(&mut self.valid, n_rel);
+        augment(&mut self.test, n_rel);
+    }
 }
 
 fn parse_triples(content: &str) -> Vec<Triple> {
@@ -203,6 +238,29 @@ mod tests {
         assert_eq!(interned.entity_to_id["A"], 0);
         assert_eq!(interned.entity_to_id["B"], 1);
         assert_eq!(interned.entity_to_id["C"], 2);
+    }
+
+    #[test]
+    fn reciprocal_relations() {
+        let dir = tempfile::tempdir().unwrap();
+        write_triples(dir.path(), "train.txt", &[("A", "r1", "B")]);
+        write_triples(dir.path(), "valid.txt", &[("B", "r1", "C")]);
+        write_triples(dir.path(), "test.txt", &[("C", "r1", "A")]);
+
+        let ds = load_dataset(dir.path()).unwrap();
+        let mut interned = ds.into_interned();
+        assert_eq!(interned.num_relations(), 1);
+
+        interned.add_reciprocals();
+        assert_eq!(interned.num_relations(), 2);
+        assert_eq!(interned.id_to_relation[1], "r1_inv");
+
+        // Train: (A,r1,B) + (B,r1_inv,A)
+        assert_eq!(interned.train.len(), 2);
+        let (h, r, t) = interned.train[1];
+        assert_eq!(h, interned.entity_to_id["B"]);
+        assert_eq!(r, 1); // r1_inv
+        assert_eq!(t, interned.entity_to_id["A"]);
     }
 
     #[test]
