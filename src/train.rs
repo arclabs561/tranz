@@ -305,16 +305,22 @@ pub fn train(
     let n3_coeff = config.n3_reg;
 
     let mut losses = Vec::with_capacity(config.epochs);
+    let mut shuffled: Vec<(usize, usize, usize)> = train_triples.to_vec();
 
     for _epoch in 0..config.epochs {
         let mut epoch_loss = 0.0_f64;
         let mut n_batches = 0u32;
 
-        // Simple sequential batching with wrap-around.
+        // Shuffle triples each epoch.
+        {
+            use rand::seq::SliceRandom;
+            shuffled.shuffle(&mut rand::rng());
+        }
+
         let mut offset = 0;
         while offset < n_triples {
             let end = (offset + batch_size).min(n_triples);
-            let batch = &train_triples[offset..end];
+            let batch = &shuffled[offset..end];
             let actual_bs = batch.len();
             offset = end;
 
@@ -329,7 +335,7 @@ pub fn train(
             // Score positives: [batch]
             let pos_scores = model.score_batch(&heads, &rels, &tails)?;
 
-            // Generate negatives: corrupt head or tail uniformly.
+            // Generate random entities for corruption: [batch, k]
             let neg_entities = Tensor::rand(
                 0.0_f32,
                 num_entities as f32,
@@ -338,15 +344,30 @@ pub fn train(
             )?
             .to_dtype(DType::U32)?;
 
-            // Score negatives (tail corruption).
-            // heads: [batch] -> [batch, 1] -> broadcast with neg_entities [batch, k]
+            // Corrupt head or tail with 50/50 probability per sample.
+            // corrupt_head: [batch, k] mask where 1 = corrupt head, 0 = corrupt tail.
+            let corrupt_mask = Tensor::rand(
+                0.0_f32,
+                1.0_f32,
+                (actual_bs, config.num_negatives),
+                &model.device,
+            )?;
+            let half = Tensor::full(0.5_f32, (actual_bs, config.num_negatives), &model.device)?;
+            let corrupt_head = corrupt_mask.lt(&half)?; // 1 where < 0.5
+
             let heads_exp = heads.unsqueeze(1)?.expand((actual_bs, config.num_negatives))?;
             let rels_exp = rels.unsqueeze(1)?.expand((actual_bs, config.num_negatives))?;
+            let tails_exp = tails.unsqueeze(1)?.expand((actual_bs, config.num_negatives))?;
+
+            // Where corrupt_head=1: use neg_entities as head, original tail.
+            // Where corrupt_head=0: use original head, neg_entities as tail.
+            let neg_heads = corrupt_head.where_cond(&neg_entities, &heads_exp)?;
+            let neg_tails = corrupt_head.where_cond(&tails_exp, &neg_entities)?;
 
             let neg_scores = model.score_batch(
-                &heads_exp.flatten_all()?,
+                &neg_heads.flatten_all()?,
                 &rels_exp.flatten_all()?,
-                &neg_entities.flatten_all()?,
+                &neg_tails.flatten_all()?,
             )?
             .reshape((actual_bs, config.num_negatives))?;
 
