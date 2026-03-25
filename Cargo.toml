@@ -1,0 +1,31 @@
+[package]
+name = "tranz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Point-embedding knowledge graph models: TransE, RotatE, ComplEx. GPU training via candle."
+keywords = ["knowledge-graph", "embeddings", "link-prediction"]
+categories = ["science", "algorithms"]
+
+[dependencies]
+candle-core = { version = "0.9", optional = true }
+candle-nn = { version = "0.9", optional = true }
+rand = { version = "0.9", optional = true }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[features]
+default = ["rand"]
+candle = ["dep:candle-core", "dep:candle-nn"]
+cuda = ["candle", "candle-core/cuda"]
+
+[dev-dependencies]
+proptest = "1.5"
+
+[lints]
+workspace = true
