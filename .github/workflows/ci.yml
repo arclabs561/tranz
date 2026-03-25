@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - rust: stable
+            lint: true
+          - rust: "1.75"
+            lint: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: ${{ matrix.lint && 'clippy, rustfmt' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+        if: matrix.lint
+      - run: cargo clippy --all-features --all-targets
+        if: matrix.lint
+      - run: cargo test
+      - run: cargo test --all-features
+      - run: cargo doc --all-features --no-deps
+        if: matrix.lint
+        env:
+          RUSTDOCFLAGS: -Dwarnings
