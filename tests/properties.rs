@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use proptest::prelude::*;
 use tranz::{ComplEx, DistMult, RotatE, Scorer, TransE};
 
