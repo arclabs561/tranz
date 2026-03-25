@@ -52,6 +52,9 @@ TRAIN OPTIONS:
     --alpha <F>           SANS adversarial temperature (default: 1.0)
     --n3 <F>              N3 regularization coefficient (default: 0.0)
     --reciprocals         Add reciprocal relations
+    --normalize           Normalize entity embeddings to unit L2 norm
+    --warmup <N>          Linear LR warmup epochs (default: 0)
+    --log-interval <N>    Print loss every N epochs (default: 10)
     --output <DIR>        Output directory for embeddings (default: output/)
     --eval                Evaluate on test set after training"
     );
@@ -85,6 +88,9 @@ fn cmd_train(args: &[String]) {
     let mut alpha = 1.0_f32;
     let mut n3_reg = 0.0_f32;
     let mut reciprocals = false;
+    let mut normalize = false;
+    let mut warmup = 0_usize;
+    let mut log_interval = 10_usize;
     let mut output_dir = PathBuf::from("output");
     let mut do_eval = false;
 
@@ -147,6 +153,17 @@ fn cmd_train(args: &[String]) {
             "--reciprocals" => {
                 reciprocals = true;
             }
+            "--normalize" => {
+                normalize = true;
+            }
+            "--warmup" => {
+                i += 1;
+                warmup = args[i].parse().unwrap();
+            }
+            "--log-interval" => {
+                i += 1;
+                log_interval = args[i].parse().unwrap();
+            }
             "--output" => {
                 i += 1;
                 output_dir = PathBuf::from(&args[i]);
@@ -207,6 +224,9 @@ fn cmd_train(args: &[String]) {
         n3_reg,
         batch_size,
         epochs,
+        normalize_entities: normalize,
+        warmup_epochs: warmup,
+        log_interval,
         ..TrainConfig::default()
     };
 
