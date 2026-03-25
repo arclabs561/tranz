@@ -54,6 +54,9 @@ pub struct TrainConfig {
     pub batch_size: usize,
     /// Number of training epochs.
     pub epochs: usize,
+    /// Normalize entity embeddings to unit L2 norm after each step.
+    /// Standard for TransE (Bordes et al., 2013). Disabled by default.
+    pub normalize_entities: bool,
     /// Evaluate on validation set every N epochs. 0 = no validation.
     pub eval_interval: usize,
     /// Stop if validation MRR doesn't improve for this many eval cycles.
@@ -73,6 +76,7 @@ impl Default for TrainConfig {
             n3_reg: 0.0,
             batch_size: 512,
             epochs: 1000,
+            normalize_entities: false,
             eval_interval: 0,
             patience: 5,
         }
@@ -431,6 +435,14 @@ pub fn train_with_validation(
             }
 
             optimizer.backward_step(&loss)?;
+
+            // Entity normalization (L2 unit norm per row).
+            if config.normalize_entities {
+                let ent = model.entity_embeddings.as_tensor();
+                let norms = ent.sqr()?.sum(D::Minus1)?.sqrt()?.unsqueeze(D::Minus1)?;
+                let normalized = ent.broadcast_div(&norms.clamp(1e-8, f64::MAX)?)?;
+                model.entity_embeddings.set(&normalized)?;
+            }
 
             epoch_loss += loss.to_scalar::<f32>()? as f64;
             n_batches += 1;

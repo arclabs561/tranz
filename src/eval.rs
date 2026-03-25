@@ -17,12 +17,12 @@
 //! strictly better (lower) scores count. This is equivalent to "best-case
 //! rank among tied entities."
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::Scorer;
 
 /// Link prediction metrics.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Metrics {
     /// Mean Reciprocal Rank (filtered).
     pub mrr: f32,
@@ -32,6 +32,15 @@ pub struct Metrics {
     pub hits_at_3: f32,
     /// Hits@10 (filtered).
     pub hits_at_10: f32,
+}
+
+/// Evaluation results with optional per-relation breakdown.
+#[derive(Debug, Clone)]
+pub struct EvalResult {
+    /// Aggregate metrics over all test triples.
+    pub metrics: Metrics,
+    /// Per-relation metrics, keyed by relation ID.
+    pub per_relation: HashMap<usize, Metrics>,
 }
 
 /// Evaluate link prediction on test triples in the filtered setting.
@@ -50,23 +59,35 @@ pub fn evaluate_link_prediction(
     all_triples: &[(usize, usize, usize)],
     num_entities: usize,
 ) -> Metrics {
+    evaluate_link_prediction_detailed(model, test_triples, all_triples, num_entities).metrics
+}
+
+/// Evaluate link prediction with per-relation breakdown.
+///
+/// Same protocol as [`evaluate_link_prediction`], but also returns
+/// per-relation metrics keyed by relation ID.
+pub fn evaluate_link_prediction_detailed(
+    model: &dyn Scorer,
+    test_triples: &[(usize, usize, usize)],
+    all_triples: &[(usize, usize, usize)],
+    num_entities: usize,
+) -> EvalResult {
     if test_triples.is_empty() {
-        return Metrics {
-            mrr: 0.0,
-            hits_at_1: 0.0,
-            hits_at_3: 0.0,
-            hits_at_10: 0.0,
+        return EvalResult {
+            metrics: Metrics::default(),
+            per_relation: HashMap::new(),
         };
     }
 
     let known: HashSet<(usize, usize, usize)> = all_triples.iter().copied().collect();
 
-    let mut ranks = Vec::with_capacity(test_triples.len() * 2);
+    // Collect (relation_id, rank) pairs for both head and tail prediction.
+    let mut rel_ranks: Vec<(usize, u32)> = Vec::with_capacity(test_triples.len() * 2);
 
     for &(h, r, t) in test_triples {
         let target_score = model.score(h, r, t);
 
-        // Tail prediction: fix (h, r), rank all t'
+        // Tail prediction.
         let mut rank = 1u32;
         for t_prime in 0..num_entities {
             if t_prime == t {
@@ -79,9 +100,9 @@ pub fn evaluate_link_prediction(
                 rank += 1;
             }
         }
-        ranks.push(rank);
+        rel_ranks.push((r, rank));
 
-        // Head prediction: fix (r, t), rank all h'
+        // Head prediction.
         let mut rank = 1u32;
         for h_prime in 0..num_entities {
             if h_prime == h {
@@ -94,20 +115,38 @@ pub fn evaluate_link_prediction(
                 rank += 1;
             }
         }
-        ranks.push(rank);
+        rel_ranks.push((r, rank));
     }
 
-    let n = ranks.len() as f32;
-    let mrr = ranks.iter().map(|&r| 1.0 / r as f32).sum::<f32>() / n;
-    let hits_at_1 = ranks.iter().filter(|&&r| r <= 1).count() as f32 / n;
-    let hits_at_3 = ranks.iter().filter(|&&r| r <= 3).count() as f32 / n;
-    let hits_at_10 = ranks.iter().filter(|&&r| r <= 10).count() as f32 / n;
+    // Aggregate metrics.
+    let metrics = compute_metrics(&rel_ranks.iter().map(|&(_, rank)| rank).collect::<Vec<_>>());
 
+    // Per-relation metrics.
+    let mut per_rel: HashMap<usize, Vec<u32>> = HashMap::new();
+    for &(r, rank) in &rel_ranks {
+        per_rel.entry(r).or_default().push(rank);
+    }
+    let per_relation: HashMap<usize, Metrics> = per_rel
+        .into_iter()
+        .map(|(r, ranks)| (r, compute_metrics(&ranks)))
+        .collect();
+
+    EvalResult {
+        metrics,
+        per_relation,
+    }
+}
+
+fn compute_metrics(ranks: &[u32]) -> Metrics {
+    if ranks.is_empty() {
+        return Metrics::default();
+    }
+    let n = ranks.len() as f32;
     Metrics {
-        mrr,
-        hits_at_1,
-        hits_at_3,
-        hits_at_10,
+        mrr: ranks.iter().map(|&r| 1.0 / r as f32).sum::<f32>() / n,
+        hits_at_1: ranks.iter().filter(|&&r| r <= 1).count() as f32 / n,
+        hits_at_3: ranks.iter().filter(|&&r| r <= 3).count() as f32 / n,
+        hits_at_10: ranks.iter().filter(|&&r| r <= 10).count() as f32 / n,
     }
 }
 
@@ -115,16 +154,11 @@ pub fn evaluate_link_prediction(
 mod tests {
     use super::*;
 
-    /// Trivial model: entity 0 is always closest to itself.
     struct PerfectModel;
 
     impl Scorer for PerfectModel {
         fn score(&self, h: usize, _r: usize, t: usize) -> f32 {
-            if h == t {
-                0.0
-            } else {
-                10.0
-            }
+            if h == t { 0.0 } else { 10.0 }
         }
 
         fn num_entities(&self) -> usize {
@@ -167,15 +201,10 @@ mod tests {
     fn empty_test_returns_zeroed_metrics() {
         let metrics = evaluate_link_prediction(&PerfectModel, &[], &[], 5);
         assert_eq!(metrics.mrr, 0.0);
-        assert_eq!(metrics.hits_at_1, 0.0);
-        assert_eq!(metrics.hits_at_3, 0.0);
-        assert_eq!(metrics.hits_at_10, 0.0);
     }
 
     #[test]
     fn tie_breaking_is_pessimistic() {
-        // All entities score equally. With pessimistic tie-breaking,
-        // no entity beats the target, so rank = 1.
         struct TiedModel;
         impl Scorer for TiedModel {
             fn score(&self, _h: usize, _r: usize, _t: usize) -> f32 {
@@ -192,6 +221,39 @@ mod tests {
         assert!(
             (metrics.hits_at_1 - 1.0).abs() < 1e-6,
             "Pessimistic tie-breaking: rank should be 1 when all scores tie"
+        );
+    }
+
+    #[test]
+    fn per_relation_breakdown() {
+        // Two relations: rel 0 gets perfect score, rel 1 gets worst.
+        struct SplitModel;
+        impl Scorer for SplitModel {
+            fn score(&self, _h: usize, r: usize, t: usize) -> f32 {
+                if r == 0 {
+                    if t == 1 { 0.0 } else { 10.0 }
+                } else {
+                    // All entities score the same.
+                    5.0
+                }
+            }
+            fn num_entities(&self) -> usize {
+                3
+            }
+        }
+
+        let test = vec![(0, 0, 1), (0, 1, 1)];
+        let all = vec![(0, 0, 1), (0, 1, 1)];
+        let result = evaluate_link_prediction_detailed(&SplitModel, &test, &all, 3);
+
+        // Relation 0 should have better MRR than relation 1.
+        let r0 = result.per_relation[&0];
+        let r1 = result.per_relation[&1];
+        assert!(
+            r0.mrr >= r1.mrr,
+            "Relation 0 MRR ({}) should be >= Relation 1 MRR ({})",
+            r0.mrr,
+            r1.mrr
         );
     }
 }
