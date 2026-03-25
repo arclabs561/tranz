@@ -23,6 +23,7 @@ fn main() {
 
     match args[1].as_str() {
         "train" => cmd_train(&args[2..]),
+        "predict" => cmd_predict(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
         other => {
             eprintln!("Unknown command: {other}");
@@ -56,8 +57,158 @@ TRAIN OPTIONS:
     --warmup <N>          Linear LR warmup epochs (default: 0)
     --log-interval <N>    Print loss every N epochs (default: 10)
     --output <DIR>        Output directory for embeddings (default: output/)
-    --eval                Evaluate on test set after training"
+    --eval                Evaluate on test set after training
+
+USAGE:
+    tranz predict [OPTIONS]
+
+PREDICT OPTIONS:
+    --embeddings <DIR>    Directory with entities.tsv and relations.tsv
+    --model <MODEL>       transe, rotate, complex, distmult (default: transe)
+    --head <NAME>         Head entity name (for tail prediction)
+    --tail <NAME>         Tail entity name (for head prediction)
+    --relation <NAME>     Relation name
+    --k <N>               Number of predictions (default: 10)"
     );
+}
+
+fn cmd_predict(args: &[String]) {
+    use std::collections::HashMap;
+    use tranz::io::load_embeddings;
+    use tranz::Scorer;
+
+    let mut embeddings_dir = PathBuf::from("output");
+    let mut model_name = "transe".to_string();
+    let mut head: Option<String> = None;
+    let mut tail: Option<String> = None;
+    let mut relation: Option<String> = None;
+    let mut k = 10_usize;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--embeddings" => {
+                i += 1;
+                embeddings_dir = PathBuf::from(&args[i]);
+            }
+            "--model" => {
+                i += 1;
+                model_name = args[i].clone();
+            }
+            "--head" => {
+                i += 1;
+                head = Some(args[i].clone());
+            }
+            "--tail" => {
+                i += 1;
+                tail = Some(args[i].clone());
+            }
+            "--relation" => {
+                i += 1;
+                relation = Some(args[i].clone());
+            }
+            "--k" => {
+                i += 1;
+                k = args[i].parse().unwrap();
+            }
+            other => {
+                eprintln!("Unknown argument: {other}");
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let rel_name = relation.unwrap_or_else(|| {
+        eprintln!("--relation is required");
+        std::process::exit(1);
+    });
+
+    // Load embeddings.
+    let loaded = load_embeddings(&embeddings_dir).unwrap_or_else(|e| {
+        eprintln!("Failed to load embeddings: {e}");
+        std::process::exit(1);
+    });
+    let ent_names = loaded.entity_names;
+    let ent_vecs = loaded.entity_vecs;
+    let rel_names = loaded.relation_names;
+    let rel_vecs = loaded.relation_vecs;
+
+    // Build name-to-index maps.
+    let ent_map: HashMap<&str, usize> = ent_names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+    let rel_map: HashMap<&str, usize> = rel_names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+
+    let rel_id = *rel_map.get(rel_name.as_str()).unwrap_or_else(|| {
+        eprintln!("Unknown relation: {rel_name}");
+        eprintln!("Available: {}", rel_names.join(", "));
+        std::process::exit(1);
+    });
+
+    // Determine embedding dim.
+    let emb_dim = ent_vecs[0].len();
+
+    // Build model based on type.
+    let scorer: Box<dyn Scorer + Sync> = match model_name.as_str() {
+        "transe" => Box::new(tranz::TransE::from_vecs(ent_vecs, rel_vecs, emb_dim)),
+        "distmult" => Box::new(tranz::DistMult::from_vecs(ent_vecs, rel_vecs, emb_dim)),
+        "complex" => {
+            let dim = emb_dim / 2;
+            Box::new(tranz::ComplEx::from_vecs(ent_vecs, rel_vecs, dim))
+        }
+        "rotate" => {
+            let dim = emb_dim / 2;
+            Box::new(tranz::RotatE::from_vecs(ent_vecs, rel_vecs, dim, 12.0))
+        }
+        other => {
+            eprintln!("Unknown model: {other}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Some(head_name) = &head {
+        // Tail prediction: (head, relation, ?)
+        let head_id = *ent_map.get(head_name.as_str()).unwrap_or_else(|| {
+            eprintln!("Unknown entity: {head_name}");
+            std::process::exit(1);
+        });
+        let results = scorer.top_k_tails(head_id, rel_id, k);
+        println!("Top-{k} tail predictions for ({head_name}, {rel_name}, ?):");
+        for (rank, (ent_id, score)) in results.iter().enumerate() {
+            println!(
+                "  {:>3}. {:<30} score={:.4}",
+                rank + 1,
+                &ent_names[*ent_id],
+                score
+            );
+        }
+    } else if let Some(tail_name) = &tail {
+        // Head prediction: (?, relation, tail)
+        let tail_id = *ent_map.get(tail_name.as_str()).unwrap_or_else(|| {
+            eprintln!("Unknown entity: {tail_name}");
+            std::process::exit(1);
+        });
+        let results = scorer.top_k_heads(rel_id, tail_id, k);
+        println!("Top-{k} head predictions for (?, {rel_name}, {tail_name}):");
+        for (rank, (ent_id, score)) in results.iter().enumerate() {
+            println!(
+                "  {:>3}. {:<30} score={:.4}",
+                rank + 1,
+                &ent_names[*ent_id],
+                score
+            );
+        }
+    } else {
+        eprintln!("Specify --head <NAME> for tail prediction or --tail <NAME> for head prediction");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(not(feature = "candle"))]
@@ -71,7 +222,6 @@ fn cmd_train(_args: &[str]) {
 #[cfg(feature = "candle")]
 fn cmd_train(args: &[String]) {
     use tranz::dataset;
-    use tranz::eval::evaluate_link_prediction;
     use tranz::io::export_embeddings;
     use tranz::train::{self, ModelType, TrainConfig};
     use tranz::Scorer;
