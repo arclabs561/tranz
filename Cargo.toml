@@ -16,7 +16,6 @@ publish = true
 candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }
 rand = { version = "0.9", optional = true }
-serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [features]
