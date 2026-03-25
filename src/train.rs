@@ -57,6 +57,11 @@ pub struct TrainConfig {
     /// Normalize entity embeddings to unit L2 norm after each step.
     /// Standard for TransE (Bordes et al., 2013). Disabled by default.
     pub normalize_entities: bool,
+    /// Linear warmup epochs. LR ramps from 0 to `lr` over this many epochs.
+    /// 0 = no warmup.
+    pub warmup_epochs: usize,
+    /// Print loss to stderr every N epochs. 0 = silent.
+    pub log_interval: usize,
     /// Evaluate on validation set every N epochs. 0 = no validation.
     pub eval_interval: usize,
     /// Stop if validation MRR doesn't improve for this many eval cycles.
@@ -77,6 +82,8 @@ impl Default for TrainConfig {
             batch_size: 512,
             epochs: 1000,
             normalize_entities: false,
+            warmup_epochs: 0,
+            log_interval: 0,
             eval_interval: 0,
             patience: 5,
         }
@@ -364,7 +371,17 @@ pub fn train_with_validation(
     let mut best_mrr = f32::NEG_INFINITY;
     let mut patience_counter = 0_usize;
 
+    let base_lr = config.lr;
+
     for _epoch in 0..config.epochs {
+        // Linear warmup.
+        if config.warmup_epochs > 0 && _epoch < config.warmup_epochs {
+            let lr = base_lr * (_epoch + 1) as f64 / config.warmup_epochs as f64;
+            optimizer.set_learning_rate(lr);
+        } else if config.warmup_epochs > 0 && _epoch == config.warmup_epochs {
+            optimizer.set_learning_rate(base_lr);
+        }
+
         let mut epoch_loss = 0.0_f64;
         let mut n_batches = 0u32;
 
@@ -471,7 +488,12 @@ pub fn train_with_validation(
             n_batches += 1;
         }
 
-        losses.push((epoch_loss / n_batches as f64) as f32);
+        let avg_loss = (epoch_loss / n_batches as f64) as f32;
+        losses.push(avg_loss);
+
+        if config.log_interval > 0 && (_epoch + 1) % config.log_interval == 0 {
+            eprintln!("epoch {:>4} | loss {:.4}", _epoch + 1, avg_loss);
+        }
 
         // Validation-based early stopping.
         if let Some(ref val) = validation {
