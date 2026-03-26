@@ -85,6 +85,22 @@ tranz train --data data/WN18RR --model distmult --dim 100 \
 | Hits@1 | 0.329 |
 | Hits@10 | 0.362 |
 
+### RotatE + 1-N -- MRR 0.402
+
+```sh
+tranz train --data data/WN18RR --model rotate --dim 100 \
+    --1n --reciprocals \
+    --epochs 100 --batch-size 128 --lr 0.001 --log-interval 10 \
+    --output output/rotate --eval --gpu
+```
+
+| Metric | Value |
+|--------|-------|
+| MRR | 0.402 |
+| MR | 7950 |
+| Hits@1 | 0.388 |
+| Hits@10 | 0.429 |
+
 ### TransE + Negative Sampling -- MRR 0.156
 
 TransE with SANS (self-adversarial negative sampling). Lower MRR is
