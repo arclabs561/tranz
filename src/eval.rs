@@ -79,7 +79,7 @@ pub fn evaluate_link_prediction_detailed(
     model: &(dyn Scorer + Sync),
     test_triples: &[(usize, usize, usize)],
     all_triples: &[(usize, usize, usize)],
-    num_entities: usize,
+    _num_entities: usize,
 ) -> EvalResult {
     if test_triples.is_empty() {
         return EvalResult {
@@ -91,35 +91,38 @@ pub fn evaluate_link_prediction_detailed(
     let known: HashSet<(usize, usize, usize)> = all_triples.iter().copied().collect();
 
     // Parallel: each test triple produces two (relation, rank) pairs.
+    // Uses score_all_tails/heads for batch scoring (avoids per-entity method calls).
     let rel_ranks: Vec<(usize, u32)> = test_triples
         .par_iter()
         .flat_map_iter(|&(h, r, t)| {
-            let target_score = model.score(h, r, t);
-
-            // Tail prediction.
+            // Tail prediction: score all entities as tails for (h, r, ?).
+            let tail_scores = model.score_all_tails(h, r);
+            let target_score = tail_scores[t];
             let mut tail_rank = 1u32;
-            for t_prime in 0..num_entities {
+            for (t_prime, &s) in tail_scores.iter().enumerate() {
                 if t_prime == t {
                     continue;
                 }
                 if known.contains(&(h, r, t_prime)) {
                     continue;
                 }
-                if model.score(h, r, t_prime) < target_score {
+                if s < target_score {
                     tail_rank += 1;
                 }
             }
 
-            // Head prediction.
+            // Head prediction: score all entities as heads for (?, r, t).
+            let head_scores = model.score_all_heads(r, t);
+            let target_score = head_scores[h];
             let mut head_rank = 1u32;
-            for h_prime in 0..num_entities {
+            for (h_prime, &s) in head_scores.iter().enumerate() {
                 if h_prime == h {
                     continue;
                 }
                 if known.contains(&(h_prime, r, t)) {
                     continue;
                 }
-                if model.score(h_prime, r, t) < target_score {
+                if s < target_score {
                     head_rank += 1;
                 }
             }
