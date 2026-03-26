@@ -252,6 +252,7 @@ fn cmd_train(args: &[String]) {
     let mut reciprocals = false;
     let mut normalize = false;
     let mut warmup = 0_usize;
+    let mut cosine_cycles = 0_usize;
     let mut log_interval = 10_usize;
     let mut output_dir = PathBuf::from("output");
     let mut checkpoint_interval = 0_usize;
@@ -352,6 +353,10 @@ fn cmd_train(args: &[String]) {
                 i += 1;
                 warmup = args[i].parse().unwrap();
             }
+            "--cosine-cycles" => {
+                i += 1;
+                cosine_cycles = args[i].parse().unwrap();
+            }
             "--log-interval" => {
                 i += 1;
                 log_interval = args[i].parse().unwrap();
@@ -439,6 +444,7 @@ fn cmd_train(args: &[String]) {
         epochs,
         normalize_entities: normalize,
         warmup_epochs: warmup,
+        cosine_cycles,
         log_interval,
         checkpoint_dir: if checkpoint_interval > 0 {
             Some(output_dir.clone())
