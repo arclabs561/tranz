@@ -356,6 +356,82 @@ impl TrainableModel {
         }
     }
 
+    /// Score all entities as heads for a batch of (r, t) queries.
+    ///
+    /// Returns tensor of shape `[batch, num_entities]`.
+    /// Higher = more likely for all models (similarity convention).
+    pub fn score_1n_heads(&self, relations: &Tensor, tails: &Tensor) -> Result<Tensor> {
+        let r = self
+            .relation_embeddings
+            .as_tensor()
+            .index_select(relations, 0)?;
+        let t = self.entity_embeddings.as_tensor().index_select(tails, 0)?;
+        let ent_matrix = self.entity_embeddings.as_tensor();
+
+        match self.model_type {
+            ModelType::TransE => {
+                // score(h, r, t) ~ -||h - (t - r)||^2 for head prediction
+                let tr = (t - r)?; // target for h
+                let tr_sq = tr.sqr()?.sum(D::Minus1)?;
+                let ent_sq = ent_matrix.sqr()?.sum(D::Minus1)?;
+                let cross = tr.matmul(&ent_matrix.t()?)?;
+                let dist_sq = (ent_sq
+                    .unsqueeze(0)?
+                    .broadcast_add(&tr_sq.unsqueeze(D::Minus1)?)?
+                    - (cross * 2.0)?)?;
+                dist_sq.neg()
+            }
+            ModelType::DistMult => {
+                // score = sum(h * r * t) = (r*t) @ E^T (same as tail since symmetric)
+                let rt = (r * t)?;
+                rt.matmul(&ent_matrix.t()?)
+            }
+            ModelType::ComplEx => {
+                let dim = self.dim;
+                // For head prediction: Re(h * r * conj(t)) = Re(h * (r * conj(t)))
+                // conj(t) = (t_re, -t_im)
+                // r * conj(t) = (r_re*t_re + r_im*t_im, r_im*t_re - r_re*t_im)
+                let r_re = r.i((.., ..dim))?;
+                let r_im = r.i((.., dim..))?;
+                let t_re = t.i((.., ..dim))?;
+                let t_im = t.i((.., dim..))?;
+                let rc_re = ((&r_re * &t_re)? + (&r_im * &t_im)?)?;
+                let rc_im = ((&r_im * &t_re)? - (&r_re * &t_im)?)?;
+                let e_re = ent_matrix.i((.., ..dim))?;
+                let e_im = ent_matrix.i((.., dim..))?;
+                // Re(h * rc) = h_re @ rc_re^T ... wait, we need h @ rc not rc @ h
+                // Actually: Re(h * rc) = h_re*rc_re - h_im*rc_im
+                // As matmul: e_re @ rc_re^T + e_im @ (-rc_im)^T
+                // But we want [B, E] where E iterates over heads (entities).
+                // score[b, e] = Re(e * rc[b]) = e_re @ rc_re[b]^T + e_im @ rc_im[b]^T
+                // = rc_re[b] @ e_re^T + rc_im[b] @ e_im^T  (same as tail prediction with rc)
+                let score = (rc_re.matmul(&e_re.t()?)? + rc_im.matmul(&e_im.t()?)?)?;
+                Ok(score)
+            }
+            ModelType::RotatE => {
+                // For head prediction with rotation: h = t * conj(r)
+                // Similar GEMM trick. Use t*conj(r) as the query.
+                let dim = self.dim;
+                let t_re = t.i((.., ..dim))?;
+                let t_im = t.i((.., dim..))?;
+                let r_cos = r.cos()?;
+                let r_sin = r.sin()?;
+                // t * conj(r) = t * (cos, -sin)
+                let tr_re = ((&t_re * &r_cos)? + (&t_im * &r_sin)?)?;
+                let tr_im = ((&t_im * &r_cos)? - (&t_re * &r_sin)?)?;
+                let tr = Tensor::cat(&[&tr_re, &tr_im], D::Minus1)?;
+                let tr_sq = tr.sqr()?.sum(D::Minus1)?;
+                let ent_sq = ent_matrix.sqr()?.sum(D::Minus1)?;
+                let cross = tr.matmul(&ent_matrix.t()?)?;
+                let dist_sq = (ent_sq
+                    .unsqueeze(0)?
+                    .broadcast_add(&tr_sq.unsqueeze(D::Minus1)?)?
+                    - (cross * 2.0)?)?;
+                dist_sq.neg()
+            }
+        }
+    }
+
     /// Compute N3 regularization: `||h||_3^3 + ||r||_3^3 + ||t||_3^3`.
     fn n3_penalty(&self, heads: &Tensor, relations: &Tensor, tails: &Tensor) -> Result<Tensor> {
         let h = self.entity_embeddings.as_tensor().index_select(heads, 0)?;
@@ -562,28 +638,43 @@ pub fn train_with_validation(
             let tails = Tensor::from_vec(tails_data.clone(), actual_bs, &model.device)?;
 
             let mut loss = if config.one_to_n {
-                // 1-N scoring: score all entities as tails.
-                let scores = model.score_1n(&heads, &rels)?; // [B, E]
-
-                // Softmax cross-entropy with label smoothing.
-                // log_softmax gives log-probabilities, then NLL against target.
                 let eps = config.label_smoothing as f64;
-                let log_probs = candle_nn::ops::log_softmax(&scores, D::Minus1)?;
 
-                // For each sample, the target is the correct tail entity index.
-                // With label smoothing: loss = (1-eps)*NLL + eps*uniform_entropy
+                // Tail prediction: score all entities as tails for (h, r, ?).
+                let tail_scores = model.score_1n(&heads, &rels)?;
+                let tail_log_probs = candle_nn::ops::log_softmax(&tail_scores, D::Minus1)?;
                 let tail_ids = Tensor::from_vec(
                     batch.iter().map(|&(_, _, t)| t as u32).collect::<Vec<_>>(),
                     actual_bs,
                     &model.device,
                 )?;
-                // Gather log-prob of the correct entity.
-                let correct_log_prob = log_probs.gather(&tail_ids.unsqueeze(1)?, 1)?.squeeze(1)?;
-                let nll = correct_log_prob.neg()?.mean_all()?;
+                let tail_nll = tail_log_probs
+                    .gather(&tail_ids.unsqueeze(1)?, 1)?
+                    .squeeze(1)?
+                    .neg()?
+                    .mean_all()?;
+
+                // Head prediction: score all entities as heads for (?, r, t).
+                let head_scores = model.score_1n_heads(&rels, &tails)?;
+                let head_log_probs = candle_nn::ops::log_softmax(&head_scores, D::Minus1)?;
+                let head_ids = Tensor::from_vec(
+                    batch.iter().map(|&(h, _, _)| h as u32).collect::<Vec<_>>(),
+                    actual_bs,
+                    &model.device,
+                )?;
+                let head_nll = head_log_probs
+                    .gather(&head_ids.unsqueeze(1)?, 1)?
+                    .squeeze(1)?
+                    .neg()?
+                    .mean_all()?;
+
+                // Average head and tail losses.
+                let nll = ((tail_nll + head_nll)? * 0.5)?;
 
                 if eps > 0.0 {
-                    // Smoothed loss: (1-eps)*NLL - eps*mean(log_probs)
-                    let uniform = log_probs.mean_all()?.neg()?;
+                    let tail_uniform = tail_log_probs.mean_all()?.neg()?;
+                    let head_uniform = head_log_probs.mean_all()?.neg()?;
+                    let uniform = ((tail_uniform + head_uniform)? * 0.5)?;
                     ((nll * (1.0 - eps))? + (uniform * eps)?)?
                 } else {
                     nll
