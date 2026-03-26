@@ -12,6 +12,9 @@ categories = ["science", "algorithms"]
 readme = "README.md"
 publish = true
 
+[package.metadata.docs.rs]
+features = ["candle"]
+
 [dependencies]
 candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }

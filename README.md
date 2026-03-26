@@ -43,11 +43,12 @@ tranz predict --embeddings embeddings/ --model distmult \
 
 | Model | Mode | Dim | Epochs | MRR | H@1 | H@10 |
 |-------|------|-----|--------|-----|-----|------|
+| ComplEx | 1-N + reciprocals | 100 | 50 | **0.429** | 0.407 | 0.469 |
 | ComplEx | 1-N + softmax CE | 50 | 10 | 0.361 | 0.354 | 0.372 |
 | DistMult | 1-N + softmax CE | 50 | 10 | 0.298 | 0.269 | 0.347 |
-| TransE | neg. sampling (SANS) | 100 | 100 | 0.156 | 0.002 | 0.421 |
 
-1-N scoring with softmax cross-entropy converges much faster than negative sampling. Published ComplEx MRR on WN18RR is ~0.47 at convergence (dim=2000).
+Published ComplEx MRR on WN18RR is ~0.475 (Lacroix et al. 2018, dim=100, Adagrad).
+1-N scoring with softmax CE converges much faster than negative sampling.
 
 ## Library usage
 
