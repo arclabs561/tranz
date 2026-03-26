@@ -734,6 +734,18 @@ pub fn train_with_validation(
             shuffled.shuffle(&mut rand::rng());
         }
 
+        // Preallocate target buffers for 1-N mode to avoid per-batch allocation.
+        let mut tail_target_buf = if config.one_to_n {
+            vec![0.0_f32; batch_size * num_entities]
+        } else {
+            Vec::new()
+        };
+        let mut head_target_buf = if config.one_to_n {
+            vec![0.0_f32; batch_size * num_entities]
+        } else {
+            Vec::new()
+        };
+
         let mut offset = 0;
         while offset < n_triples {
             let end = (offset + batch_size).min(n_triples);
@@ -756,18 +768,19 @@ pub fn train_with_validation(
                 let tail_scores = model.score_1n(&heads, &rels)?;
                 let tail_log_probs = candle_nn::ops::log_softmax(&tail_scores, D::Minus1)?;
 
-                // Build multi-hot target: 1/|known_tails| for each known tail.
+                // Build multi-hot target using preallocated buffer.
                 let kt = known_tails.as_ref().unwrap();
-                let mut tail_target = vec![0.0_f32; actual_bs * num_entities];
+                let tgt = &mut tail_target_buf[..actual_bs * num_entities];
+                tgt.fill(0.0);
                 for (i, &(h, r, _)) in batch.iter().enumerate() {
                     let tails = kt.get(&(h, r)).unwrap();
                     let w = 1.0 / tails.len() as f32;
                     for &t in tails {
-                        tail_target[i * num_entities + t] = w;
+                        tgt[i * num_entities + t] = w;
                     }
                 }
                 let tail_target_t =
-                    Tensor::from_vec(tail_target, (actual_bs, num_entities), &model.device)?;
+                    Tensor::from_slice(tgt, (actual_bs, num_entities), &model.device)?;
                 // NLL = -sum(target * log_probs) / batch
                 let tail_nll = (&tail_target_t * &tail_log_probs)?
                     .sum_all()?
@@ -779,16 +792,17 @@ pub fn train_with_validation(
                 let head_log_probs = candle_nn::ops::log_softmax(&head_scores, D::Minus1)?;
 
                 let kh = known_heads.as_ref().unwrap();
-                let mut head_target = vec![0.0_f32; actual_bs * num_entities];
+                let htgt = &mut head_target_buf[..actual_bs * num_entities];
+                htgt.fill(0.0);
                 for (i, &(_, r, t)) in batch.iter().enumerate() {
                     let heads = kh.get(&(r, t)).unwrap();
                     let w = 1.0 / heads.len() as f32;
                     for &h in heads {
-                        head_target[i * num_entities + h] = w;
+                        htgt[i * num_entities + h] = w;
                     }
                 }
                 let head_target_t =
-                    Tensor::from_vec(head_target, (actual_bs, num_entities), &model.device)?;
+                    Tensor::from_slice(htgt, (actual_bs, num_entities), &model.device)?;
                 let head_nll = (&head_target_t * &head_log_probs)?
                     .sum_all()?
                     .neg()?
