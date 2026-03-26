@@ -381,4 +381,81 @@ mod tests {
         assert_eq!(ds.valid.len(), 10);
         assert_eq!(ds.train.len(), 80);
     }
+
+    #[test]
+    fn split_zero_fractions() {
+        let ds = Dataset {
+            train: vec![Triple {
+                head: "a".into(),
+                relation: "r".into(),
+                tail: "b".into(),
+            }],
+            valid: Vec::new(),
+            test: Vec::new(),
+        };
+        let ds = ds.split(0.0, 0.0);
+        assert_eq!(ds.train.len(), 1);
+        assert!(ds.valid.is_empty());
+        assert!(ds.test.is_empty());
+    }
+
+    #[test]
+    fn reciprocal_with_multiple_relations() {
+        let dir = tempfile::tempdir().unwrap();
+        write_triples(
+            dir.path(),
+            "train.txt",
+            &[("A", "r1", "B"), ("C", "r2", "D")],
+        );
+        write_triples(dir.path(), "valid.txt", &[]);
+        write_triples(dir.path(), "test.txt", &[]);
+
+        let ds = load_dataset(dir.path()).unwrap();
+        let mut interned = ds.into_interned();
+        assert_eq!(interned.num_relations(), 2);
+
+        interned.add_reciprocals();
+        assert_eq!(interned.num_relations(), 4);
+        assert_eq!(interned.id_to_relation[2], "r1_inv");
+        assert_eq!(interned.id_to_relation[3], "r2_inv");
+        assert_eq!(interned.train.len(), 4); // 2 original + 2 reciprocal
+    }
+
+    #[test]
+    fn load_triples_mixed_separators() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.txt");
+        // Tab-separated line
+        fs::write(&path, "A\tr1\tB\nC,r2,D\n").unwrap();
+        let ds = load_triples(&path).unwrap();
+        // First line has tab -> tab separator. Second has comma.
+        // Our parser checks per-line: tab first, then comma.
+        assert_eq!(ds.train.len(), 2);
+    }
+
+    #[test]
+    fn interned_entity_order_is_deterministic() {
+        let triples = vec![
+            Triple {
+                head: "Z".into(),
+                relation: "r".into(),
+                tail: "A".into(),
+            },
+            Triple {
+                head: "M".into(),
+                relation: "r".into(),
+                tail: "Z".into(),
+            },
+        ];
+        let ds = Dataset {
+            train: triples,
+            valid: Vec::new(),
+            test: Vec::new(),
+        };
+        let interned = ds.into_interned();
+        // Order of first appearance: Z=0, A=1, M=2
+        assert_eq!(interned.entity_to_id["Z"], 0);
+        assert_eq!(interned.entity_to_id["A"], 1);
+        assert_eq!(interned.entity_to_id["M"], 2);
+    }
 }
