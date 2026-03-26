@@ -211,10 +211,8 @@ fn cmd_predict(args: &[String]) {
                 score
             );
         }
-    } else if head.is_some() && tail.is_some() && relation.is_none() {
-        // Relation prediction: (head, ?, tail)
-        let head_name = head.as_ref().unwrap();
-        let tail_name = tail.as_ref().unwrap();
+    } else if let (Some(head_name), Some(tail_name)) = (&head, &tail) {
+        // Relation prediction: (head, ?, tail) -- no relation specified.
         let head_id = *ent_map.get(head_name.as_str()).unwrap_or_else(|| {
             eprintln!("Unknown entity: {head_name}");
             std::process::exit(1);
