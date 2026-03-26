@@ -178,37 +178,6 @@ pub fn load_embeddings(dir: &Path) -> io::Result<LoadedEmbeddings> {
     })
 }
 
-/// Quantize embeddings from f32 to f16 (half precision).
-///
-/// Halves memory with near-zero MRR loss for serving.
-/// Returns flat `u16` values (IEEE 754 binary16).
-pub fn quantize_f16(vecs: &[Vec<f32>]) -> Vec<u16> {
-    let total: usize = vecs.iter().map(|v| v.len()).sum();
-    let mut out = Vec::with_capacity(total);
-    for v in vecs {
-        for &x in v {
-            out.push(f16_from_f32(x));
-        }
-    }
-    out
-}
-
-fn f16_from_f32(x: f32) -> u16 {
-    let bits = x.to_bits();
-    let sign = (bits >> 16) & 0x8000;
-    let exponent = ((bits >> 23) & 0xFF) as i32 - 127 + 15;
-    let mantissa = bits & 0x7FFFFF;
-    if exponent <= 0 {
-        // Denormalized or zero
-        sign as u16
-    } else if exponent >= 31 {
-        // Overflow -> infinity
-        (sign | 0x7C00) as u16
-    } else {
-        (sign | ((exponent as u32) << 10) | (mantissa >> 13)) as u16
-    }
-}
-
 /// Flatten `Vec<Vec<f32>>` into a contiguous row-major `Vec<f32>`.
 ///
 /// Useful for handing off to FAISS, Qdrant, or any system expecting
