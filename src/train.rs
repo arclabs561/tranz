@@ -69,6 +69,7 @@ impl Adagrad {
         self.lr = lr;
     }
 
+    #[allow(dead_code)]
     fn learning_rate(&self) -> f64 {
         self.lr
     }
@@ -1191,5 +1192,92 @@ mod tests {
         };
         let result = train(&triples, 4, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
+    }
+
+    #[test]
+    fn adagrad_optimizer_smoke() {
+        let device = Device::Cpu;
+        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 1, 0), (0, 1, 2)];
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            optimizer: OptimizerType::Adagrad,
+            dim: 8,
+            init_scale: 1e-3,
+            lr: 0.1,
+            one_to_n: true,
+            batch_size: 4,
+            epochs: 10,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 3, 2, &config, &device).unwrap();
+        assert!(result.losses.iter().all(|l| l.is_finite()));
+        let first = result.losses[0];
+        let last = *result.losses.last().unwrap();
+        assert!(
+            last < first,
+            "Adagrad loss should decrease: {first} -> {last}"
+        );
+    }
+
+    #[test]
+    fn multi_hot_labels_with_duplicate_tails() {
+        // Triple (0,0,1) and (0,0,2) share (h=0, r=0).
+        // Multi-hot target should have weight 0.5 on both entities 1 and 2.
+        let device = Device::Cpu;
+        let triples = vec![(0, 0, 1), (0, 0, 2), (1, 0, 0)];
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            dim: 8,
+            one_to_n: true,
+            batch_size: 3,
+            epochs: 5,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 3, 1, &config, &device).unwrap();
+        assert!(result.losses.iter().all(|l| l.is_finite()));
+    }
+
+    #[test]
+    fn n3_regularization_complex_moduli() {
+        // Verify N3 with ComplEx doesn't NaN.
+        let device = Device::Cpu;
+        let triples = vec![(0, 0, 1), (1, 0, 2)];
+        let config = TrainConfig {
+            model_type: ModelType::ComplEx,
+            dim: 4,
+            n3_reg: 0.1,
+            one_to_n: true,
+            batch_size: 2,
+            epochs: 5,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 3, 1, &config, &device).unwrap();
+        assert!(result.losses.iter().all(|l| l.is_finite()));
+    }
+
+    #[test]
+    fn l2_regularization_reduces_embedding_norm() {
+        let device = Device::Cpu;
+        let triples: Vec<_> = (0..20).map(|i| (i % 5, 0, (i + 1) % 5)).collect();
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            dim: 8,
+            l2_reg: 0.1,
+            one_to_n: true,
+            batch_size: 10,
+            epochs: 20,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 5, 1, &config, &device).unwrap();
+        // With strong L2 reg, embedding norms should stay small.
+        let ent_vecs = result.model.entity_vecs().unwrap();
+        let max_norm: f32 = ent_vecs
+            .iter()
+            .map(|v| v.iter().map(|x| x * x).sum::<f32>().sqrt())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_norm < 10.0,
+            "L2 reg should keep norms small, got max_norm={max_norm}"
+        );
     }
 }
