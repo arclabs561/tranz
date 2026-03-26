@@ -84,6 +84,10 @@ pub struct TrainConfig {
     /// Stop if validation MRR doesn't improve for this many eval cycles.
     /// Only used when `eval_interval > 0`.
     pub patience: usize,
+    /// Save embeddings to this directory every N epochs. None = no checkpoints.
+    pub checkpoint_dir: Option<std::path::PathBuf>,
+    /// Checkpoint interval in epochs. Only used when `checkpoint_dir` is Some.
+    pub checkpoint_interval: usize,
 }
 
 impl Default for TrainConfig {
@@ -108,6 +112,8 @@ impl Default for TrainConfig {
             log_interval: 0,
             eval_interval: 0,
             patience: 5,
+            checkpoint_dir: None,
+            checkpoint_interval: 0,
         }
     }
 }
@@ -646,6 +652,19 @@ pub fn train_with_validation(
 
         if config.log_interval > 0 && (_epoch + 1) % config.log_interval == 0 {
             eprintln!("epoch {:>4} | loss {:.4}", _epoch + 1, avg_loss);
+        }
+
+        // Checkpoint save.
+        if let Some(ref dir) = config.checkpoint_dir {
+            if config.checkpoint_interval > 0 && (_epoch + 1) % config.checkpoint_interval == 0 {
+                if let (Ok(ent), Ok(rel)) = (model.entity_vecs(), model.relation_vecs()) {
+                    let ent_names: Vec<String> = (0..num_entities).map(|i| i.to_string()).collect();
+                    let rel_names: Vec<String> =
+                        (0..num_relations).map(|i| i.to_string()).collect();
+                    let _ = crate::io::export_embeddings(dir, &ent_names, &ent, &rel_names, &rel);
+                    eprintln!("Checkpoint saved to {}", dir.display());
+                }
+            }
         }
 
         // Validation-based early stopping.
