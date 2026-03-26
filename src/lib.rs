@@ -368,6 +368,34 @@ impl Scorer for RotatE {
     fn num_entities(&self) -> usize {
         self.entities.len()
     }
+
+    fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
+        let h = &self.entities[head];
+        let r = &self.relation_angles[relation];
+        let dim = self.dim;
+        // Precompute h * r (complex rotation) once.
+        let mut hr_re = vec![0.0_f64; dim];
+        let mut hr_im = vec![0.0_f64; dim];
+        for i in 0..dim {
+            let h_re = h[i] as f64;
+            let h_im = h[dim + i] as f64;
+            let (r_sin, r_cos) = (r[i] as f64).sin_cos();
+            hr_re[i] = h_re * r_cos - h_im * r_sin;
+            hr_im[i] = h_re * r_sin + h_im * r_cos;
+        }
+        self.entities
+            .iter()
+            .map(|t| {
+                let mut dist_sq = 0.0_f64;
+                for i in 0..dim {
+                    let d_re = hr_re[i] - t[i] as f64;
+                    let d_im = hr_im[i] - t[dim + i] as f64;
+                    dist_sq += d_re * d_re + d_im * d_im;
+                }
+                dist_sq.sqrt() as f32
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -482,6 +510,34 @@ impl Scorer for ComplEx {
 
     fn num_entities(&self) -> usize {
         self.entities.len()
+    }
+
+    fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
+        let h = &self.entities[head];
+        let r = &self.relations[relation];
+        let dim = self.dim;
+        // Precompute h * r (complex) once.
+        let mut hr_re = vec![0.0_f64; dim];
+        let mut hr_im = vec![0.0_f64; dim];
+        for i in 0..dim {
+            let h_re = h[i] as f64;
+            let h_im = h[dim + i] as f64;
+            let r_re = r[i] as f64;
+            let r_im = r[dim + i] as f64;
+            hr_re[i] = h_re * r_re - h_im * r_im;
+            hr_im[i] = h_re * r_im + h_im * r_re;
+        }
+        self.entities
+            .iter()
+            .map(|t| {
+                let mut dot = 0.0_f64;
+                for i in 0..dim {
+                    // Re(hr * conj(t)) = hr_re * t_re + hr_im * t_im
+                    dot += hr_re[i] * t[i] as f64 + hr_im[i] * t[dim + i] as f64;
+                }
+                -(dot as f32)
+            })
+            .collect()
     }
 }
 
