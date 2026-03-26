@@ -52,8 +52,13 @@ TRAIN OPTIONS:
     --negatives <N>       Negative samples per positive (default: 256)
     --alpha <F>           SANS adversarial temperature (default: 1.0)
     --n3 <F>              N3 regularization coefficient (default: 0.0)
+    --norm <N>            Distance norm: 1=L1, 2=L2 (default: 1)
+    --dropout <F>         Embedding dropout rate (default: 0.0)
+    --1n / --one-to-n     Use 1-N scoring with BCE loss (faster convergence)
+    --label-smoothing <F> Label smoothing epsilon for 1-N mode (default: 0.0)
     --reciprocals         Add reciprocal relations
     --normalize           Normalize entity embeddings to unit L2 norm
+    --subsampling         Apply entity frequency subsampling weights
     --warmup <N>          Linear LR warmup epochs (default: 0)
     --log-interval <N>    Print loss every N epochs (default: 10)
     --output <DIR>        Output directory for embeddings (default: output/)
@@ -237,7 +242,9 @@ fn cmd_train(args: &[String]) {
     let mut num_negatives = 256_usize;
     let mut alpha = 1.0_f32;
     let mut n3_reg = 0.0_f32;
+    let mut dropout = 0.0_f32;
     let mut distance_norm = 1_u32;
+    let mut subsampling = false;
     let mut reciprocals = false;
     let mut normalize = false;
     let mut warmup = 0_usize;
@@ -306,6 +313,13 @@ fn cmd_train(args: &[String]) {
             "--norm" => {
                 i += 1;
                 distance_norm = args[i].parse().unwrap();
+            }
+            "--dropout" => {
+                i += 1;
+                dropout = args[i].parse().unwrap();
+            }
+            "--subsampling" => {
+                subsampling = true;
             }
             "--reciprocals" => {
                 reciprocals = true;
@@ -385,8 +399,10 @@ fn cmd_train(args: &[String]) {
         gamma,
         adversarial_temperature: alpha,
         lr,
+        embedding_dropout: dropout,
         n3_reg,
         distance_norm,
+        subsampling,
         one_to_n,
         label_smoothing,
         batch_size,
