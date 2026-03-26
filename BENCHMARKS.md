@@ -70,6 +70,9 @@ tranz train --data data/WN18RR --model complex --dim 100 \
 | Hits@1 | 0.407 |
 | Hits@10 | 0.469 |
 
+Note: increasing to dim=200, 200 epochs yields MRR=0.421 (slightly worse).
+The Adagrad recipe above is strictly better for ComplEx on WN18RR.
+
 ### DistMult + 1-N -- MRR 0.341
 
 ```sh
