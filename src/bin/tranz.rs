@@ -250,6 +250,7 @@ fn cmd_train(args: &[String]) {
     let mut warmup = 0_usize;
     let mut log_interval = 10_usize;
     let mut output_dir = PathBuf::from("output");
+    let mut checkpoint_interval = 0_usize;
     let mut do_eval = false;
     let mut one_to_n = false;
     let mut label_smoothing = 0.0_f32;
@@ -342,6 +343,10 @@ fn cmd_train(args: &[String]) {
             "--eval" => {
                 do_eval = true;
             }
+            "--checkpoint" => {
+                i += 1;
+                checkpoint_interval = args[i].parse().unwrap();
+            }
             "--1n" | "--one-to-n" => {
                 one_to_n = true;
             }
@@ -410,6 +415,12 @@ fn cmd_train(args: &[String]) {
         normalize_entities: normalize,
         warmup_epochs: warmup,
         log_interval,
+        checkpoint_dir: if checkpoint_interval > 0 {
+            Some(output_dir.clone())
+        } else {
+            None
+        },
+        checkpoint_interval,
         ..TrainConfig::default()
     };
 
