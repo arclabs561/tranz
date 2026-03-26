@@ -253,4 +253,44 @@ mod tests {
         let flat = flatten_matrix(&vecs);
         assert_eq!(flat, vec![1.0, 2.0, 3.0, 4.0]);
     }
+
+    #[test]
+    fn flatten_empty() {
+        let flat = flatten_matrix(&[]);
+        assert!(flat.is_empty());
+    }
+
+    #[test]
+    fn w2v_tsv_preserves_precision() {
+        // Verify we don't lose too much precision through text roundtrip.
+        let names = vec!["x".to_string()];
+        let vecs = vec![vec![std::f32::consts::PI, std::f32::consts::E]];
+
+        let mut buf = Vec::new();
+        write_w2v_tsv(&mut buf, &names, &vecs).unwrap();
+
+        let (_, read_vecs) = read_w2v_tsv(buf.as_slice()).unwrap();
+        assert!((read_vecs[0][0] - std::f32::consts::PI).abs() < 1e-4);
+        assert!((read_vecs[0][1] - std::f32::consts::E).abs() < 1e-4);
+    }
+
+    #[test]
+    fn read_w2v_bad_header() {
+        let bad = b"not_a_number dim\n";
+        let result = read_w2v_tsv(bad.as_slice());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_vocab_tsv_roundtrip() {
+        let names = vec![
+            "alice".to_string(),
+            "bob".to_string(),
+            "charlie".to_string(),
+        ];
+        let mut buf = Vec::new();
+        write_vocab_tsv(&mut buf, &names).unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        assert_eq!(content, "0\talice\n1\tbob\n2\tcharlie\n");
+    }
 }
