@@ -585,6 +585,23 @@ pub fn train_with_validation(
     let alpha = config.adversarial_temperature;
     let n3_coeff = config.n3_reg;
 
+    // Precompute known tails/heads for multi-hot 1-N labels.
+    // known_tails[(h, r)] = list of known tail entity IDs.
+    // known_heads[(r, t)] = list of known head entity IDs.
+    let (known_tails, known_heads) = if config.one_to_n {
+        let mut kt: std::collections::HashMap<(usize, usize), Vec<usize>> =
+            std::collections::HashMap::new();
+        let mut kh: std::collections::HashMap<(usize, usize), Vec<usize>> =
+            std::collections::HashMap::new();
+        for &(h, r, t) in train_triples {
+            kt.entry((h, r)).or_default().push(t);
+            kh.entry((r, t)).or_default().push(h);
+        }
+        (Some(kt), Some(kh))
+    } else {
+        (None, None)
+    };
+
     // Precompute entity frequency for optional subsampling weights.
     let entity_freq = if config.subsampling {
         let mut freq = vec![0u32; num_entities];
@@ -643,30 +660,44 @@ pub fn train_with_validation(
                 // Tail prediction: score all entities as tails for (h, r, ?).
                 let tail_scores = model.score_1n(&heads, &rels)?;
                 let tail_log_probs = candle_nn::ops::log_softmax(&tail_scores, D::Minus1)?;
-                let tail_ids = Tensor::from_vec(
-                    batch.iter().map(|&(_, _, t)| t as u32).collect::<Vec<_>>(),
-                    actual_bs,
-                    &model.device,
-                )?;
-                let tail_nll = tail_log_probs
-                    .gather(&tail_ids.unsqueeze(1)?, 1)?
-                    .squeeze(1)?
+
+                // Build multi-hot target: 1/|known_tails| for each known tail.
+                let kt = known_tails.as_ref().unwrap();
+                let mut tail_target = vec![0.0_f32; actual_bs * num_entities];
+                for (i, &(h, r, _)) in batch.iter().enumerate() {
+                    let tails = kt.get(&(h, r)).unwrap();
+                    let w = 1.0 / tails.len() as f32;
+                    for &t in tails {
+                        tail_target[i * num_entities + t] = w;
+                    }
+                }
+                let tail_target_t =
+                    Tensor::from_vec(tail_target, (actual_bs, num_entities), &model.device)?;
+                // NLL = -sum(target * log_probs) / batch
+                let tail_nll = (&tail_target_t * &tail_log_probs)?
+                    .sum_all()?
                     .neg()?
-                    .mean_all()?;
+                    .affine(1.0 / actual_bs as f64, 0.0)?;
 
                 // Head prediction: score all entities as heads for (?, r, t).
                 let head_scores = model.score_1n_heads(&rels, &tails)?;
                 let head_log_probs = candle_nn::ops::log_softmax(&head_scores, D::Minus1)?;
-                let head_ids = Tensor::from_vec(
-                    batch.iter().map(|&(h, _, _)| h as u32).collect::<Vec<_>>(),
-                    actual_bs,
-                    &model.device,
-                )?;
-                let head_nll = head_log_probs
-                    .gather(&head_ids.unsqueeze(1)?, 1)?
-                    .squeeze(1)?
+
+                let kh = known_heads.as_ref().unwrap();
+                let mut head_target = vec![0.0_f32; actual_bs * num_entities];
+                for (i, &(_, r, t)) in batch.iter().enumerate() {
+                    let heads = kh.get(&(r, t)).unwrap();
+                    let w = 1.0 / heads.len() as f32;
+                    for &h in heads {
+                        head_target[i * num_entities + h] = w;
+                    }
+                }
+                let head_target_t =
+                    Tensor::from_vec(head_target, (actual_bs, num_entities), &model.device)?;
+                let head_nll = (&head_target_t * &head_log_probs)?
+                    .sum_all()?
                     .neg()?
-                    .mean_all()?;
+                    .affine(1.0 / actual_bs as f64, 0.0)?;
 
                 // Average head and tail losses.
                 let nll = ((tail_nll + head_nll)? * 0.5)?;
