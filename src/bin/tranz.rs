@@ -236,7 +236,9 @@ fn cmd_train(args: &[String]) {
     let mut data_dir: Option<PathBuf> = None;
     let mut triples_file: Option<PathBuf> = None;
     let mut model_type = ModelType::TransE;
+    let mut optimizer_type = tranz::train::OptimizerType::AdamW;
     let mut dim = 200_usize;
+    let mut init_scale = 1e-3_f64;
     let mut epochs = 500_usize;
     let mut batch_size = 512_usize;
     let mut gamma = 12.0_f32;
@@ -280,6 +282,21 @@ fn cmd_train(args: &[String]) {
                         std::process::exit(1);
                     }
                 };
+            }
+            "--optimizer" => {
+                i += 1;
+                optimizer_type = match args[i].as_str() {
+                    "adam" | "adamw" => tranz::train::OptimizerType::AdamW,
+                    "adagrad" => tranz::train::OptimizerType::Adagrad,
+                    other => {
+                        eprintln!("Unknown optimizer: {other}. Use: adamw, adagrad");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            "--init-scale" => {
+                i += 1;
+                init_scale = args[i].parse().unwrap();
             }
             "--dim" => {
                 i += 1;
@@ -401,7 +418,9 @@ fn cmd_train(args: &[String]) {
 
     let config = TrainConfig {
         model_type,
+        optimizer: optimizer_type,
         dim,
+        init_scale,
         num_negatives,
         gamma,
         adversarial_temperature: alpha,
