@@ -20,6 +20,60 @@
 use candle_core::{DType, Device, IndexOp, Result, Tensor, Var, D};
 use candle_nn::optim::{AdamW, Optimizer, ParamsAdamW};
 
+/// Optimizer to use for training.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizerType {
+    /// AdamW (default). Good general-purpose optimizer.
+    AdamW,
+    /// Adagrad. Better for sparse embedding updates (proven for KGE by Lacroix 2018).
+    /// Use with higher learning rate (0.1) and small init (1e-3).
+    Adagrad,
+}
+
+/// Simple Adagrad optimizer for candle Vars.
+struct Adagrad {
+    vars: Vec<Var>,
+    sum_sq: Vec<Var>,
+    lr: f64,
+    eps: f64,
+}
+
+impl Adagrad {
+    fn new(vars: Vec<Var>, lr: f64) -> Result<Self> {
+        let sum_sq: Vec<Var> = vars
+            .iter()
+            .map(|v| Var::zeros(v.shape(), v.dtype(), v.device()))
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            vars,
+            sum_sq,
+            lr,
+            eps: 1e-10,
+        })
+    }
+
+    fn backward_step(&mut self, loss: &Tensor) -> Result<()> {
+        let grads = loss.backward()?;
+        for (var, ss) in self.vars.iter().zip(self.sum_sq.iter()) {
+            if let Some(grad) = grads.get(var) {
+                let new_ss = (ss.as_tensor() + grad.sqr()?)?;
+                let adjusted = (grad / (new_ss.sqrt()? + self.eps)?)?;
+                var.set(&(var.as_tensor() - (adjusted * self.lr)?)?)?;
+                ss.set(&new_ss)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn set_learning_rate(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn learning_rate(&self) -> f64 {
+        self.lr
+    }
+}
+
 /// Which model architecture to train.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelType {
@@ -38,8 +92,13 @@ pub enum ModelType {
 pub struct TrainConfig {
     /// Model type.
     pub model_type: ModelType,
+    /// Optimizer type.
+    pub optimizer: OptimizerType,
     /// Embedding dimension (complex dim for RotatE/ComplEx).
     pub dim: usize,
+    /// Initialization scale. Embeddings drawn from N(0, init_scale).
+    /// Default: 1e-3 (Lacroix 2018). Xavier uses ~0.17 for dim=200.
+    pub init_scale: f64,
     /// Number of negative samples per positive (ignored in 1-N mode).
     pub num_negatives: usize,
     /// Use 1-N scoring: score all entities per (h,r) query with BCE loss.
@@ -97,7 +156,9 @@ impl Default for TrainConfig {
     fn default() -> Self {
         Self {
             model_type: ModelType::TransE,
+            optimizer: OptimizerType::AdamW,
             dim: 200,
+            init_scale: 1e-3,
             num_negatives: 256,
             one_to_n: false,
             label_smoothing: 0.0,
@@ -148,25 +209,16 @@ impl TrainableModel {
         let dim = config.dim;
         let gamma = config.gamma;
 
+        let s = config.init_scale;
+
         let (entity_embeddings, relation_embeddings) = match config.model_type {
             ModelType::TransE => {
-                let scale = 6.0 / (dim as f64).sqrt();
-                let ent =
-                    Var::rand_f64(0.0 - scale, scale, (num_entities, dim), DType::F32, device)?;
-                let rel =
-                    Var::rand_f64(0.0 - scale, scale, (num_relations, dim), DType::F32, device)?;
+                let ent = Var::randn_f64(0.0, s, (num_entities, dim), DType::F32, device)?;
+                let rel = Var::randn_f64(0.0, s, (num_relations, dim), DType::F32, device)?;
                 (ent, rel)
             }
             ModelType::RotatE => {
-                // Entities: interleaved re/im, so dim*2 columns.
-                let ent_scale = gamma as f64 / (dim as f64).sqrt();
-                let ent = Var::rand_f64(
-                    -ent_scale,
-                    ent_scale,
-                    (num_entities, dim * 2),
-                    DType::F32,
-                    device,
-                )?;
+                let ent = Var::randn_f64(0.0, s, (num_entities, dim * 2), DType::F32, device)?;
                 // Relations: angles in [-pi, pi].
                 let rel = Var::rand_f64(
                     -std::f64::consts::PI,
@@ -178,17 +230,14 @@ impl TrainableModel {
                 (ent, rel)
             }
             ModelType::ComplEx | ModelType::DistMult => {
-                let scale = (6.0 / dim as f64).sqrt();
                 let ent_cols = if config.model_type == ModelType::ComplEx {
                     dim * 2
                 } else {
                     dim
                 };
                 let rel_cols = ent_cols;
-                let ent =
-                    Var::rand_f64(-scale, scale, (num_entities, ent_cols), DType::F32, device)?;
-                let rel =
-                    Var::rand_f64(-scale, scale, (num_relations, rel_cols), DType::F32, device)?;
+                let ent = Var::randn_f64(0.0, s, (num_entities, ent_cols), DType::F32, device)?;
+                let rel = Var::randn_f64(0.0, s, (num_relations, rel_cols), DType::F32, device)?;
                 (ent, rel)
             }
         };
@@ -444,8 +493,26 @@ impl TrainableModel {
             .as_tensor()
             .index_select(relations, 0)?;
         let t = self.entity_embeddings.as_tensor().index_select(tails, 0)?;
-        let cube_norm = |x: &Tensor| -> Result<Tensor> { x.abs()?.powf(3.0)?.mean_all() };
-        let penalty = (cube_norm(&h)? + cube_norm(&r)? + cube_norm(&t)?)?;
+
+        // For ComplEx: compute moduli sqrt(re^2 + im^2) per dim, then cube.
+        // For real models: just |x|^3.
+        let cube_norm = |x: &Tensor, is_complex: bool, dim: usize| -> Result<Tensor> {
+            if is_complex {
+                let re = x.i((.., ..dim))?;
+                let im = x.i((.., dim..))?;
+                let moduli = (re.sqr()? + im.sqr()?)?.sqrt()?;
+                moduli
+                    .powf(3.0)?
+                    .sum_all()?
+                    .affine(1.0 / x.dim(0)? as f64, 0.0)
+            } else {
+                x.abs()?.powf(3.0)?.mean_all()
+            }
+        };
+        let is_cx = self.model_type == ModelType::ComplEx;
+        let dim = self.dim;
+        let penalty =
+            (cube_norm(&h, is_cx, dim)? + cube_norm(&r, is_cx, dim)? + cube_norm(&t, is_cx, dim)?)?;
         Ok(penalty)
     }
 
@@ -574,14 +641,37 @@ pub fn train_with_validation(
         model.entity_embeddings.clone(),
         model.relation_embeddings.clone(),
     ];
-    let mut optimizer = AdamW::new(
-        vars,
-        ParamsAdamW {
-            lr: config.lr,
-            weight_decay: 0.0,
-            ..ParamsAdamW::default()
-        },
-    )?;
+
+    enum Opt {
+        Adam(AdamW),
+        Adagrad(self::Adagrad),
+    }
+    impl Opt {
+        fn backward_step(&mut self, loss: &Tensor) -> Result<()> {
+            match self {
+                Opt::Adam(o) => o.backward_step(loss),
+                Opt::Adagrad(o) => o.backward_step(loss),
+            }
+        }
+        fn set_learning_rate(&mut self, lr: f64) {
+            match self {
+                Opt::Adam(o) => o.set_learning_rate(lr),
+                Opt::Adagrad(o) => o.set_learning_rate(lr),
+            }
+        }
+    }
+
+    let mut optimizer = match config.optimizer {
+        OptimizerType::AdamW => Opt::Adam(AdamW::new(
+            vars,
+            ParamsAdamW {
+                lr: config.lr,
+                weight_decay: 0.0,
+                ..ParamsAdamW::default()
+            },
+        )?),
+        OptimizerType::Adagrad => Opt::Adagrad(self::Adagrad::new(vars, config.lr)?),
+    };
 
     let n_triples = train_triples.len();
     let batch_size = config.batch_size.min(n_triples);
