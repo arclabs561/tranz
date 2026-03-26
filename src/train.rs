@@ -595,7 +595,6 @@ impl TrainableModel {
     }
 }
 
-/// Training outcome.
 /// A snapshot of entity and relation embeddings (for ensembling).
 pub struct Snapshot {
     /// Entity embeddings.
@@ -606,6 +605,7 @@ pub struct Snapshot {
     pub epoch: usize,
 }
 
+/// Training outcome with model, loss history, timing, and optional snapshots.
 pub struct TrainResult {
     /// The trained model.
     pub model: TrainableModel,

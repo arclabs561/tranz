@@ -98,6 +98,35 @@ pub trait Scorer {
         scored.truncate(k);
         scored
     }
+
+    /// Score all relations for `(head, ?, tail)`.
+    ///
+    /// Returns a vec where index `r` holds `score(head, r, tail)`.
+    /// Requires knowing the number of relations (passed as parameter
+    /// since the Scorer trait doesn't expose it).
+    fn score_all_relations(&self, head: usize, tail: usize, num_relations: usize) -> Vec<f32> {
+        (0..num_relations)
+            .map(|r| self.score(head, r, tail))
+            .collect()
+    }
+
+    /// Return the top-k relations by score for `(head, ?, tail)`.
+    fn top_k_relations(
+        &self,
+        head: usize,
+        tail: usize,
+        num_relations: usize,
+        k: usize,
+    ) -> Vec<(usize, f32)> {
+        let mut scored: Vec<(usize, f32)> = self
+            .score_all_relations(head, tail, num_relations)
+            .into_iter()
+            .enumerate()
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        scored
+    }
 }
 
 // ---------------------------------------------------------------------------

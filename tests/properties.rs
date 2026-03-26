@@ -44,11 +44,11 @@ proptest! {
     ) {
         let model = TransE::new(N_ENT, N_REL, DIM);
         let all = model.score_all_tails(h, r);
-        for t in 0..N_ENT {
+        for (t, &score) in all.iter().enumerate() {
             let individual = model.score(h, r, t);
             prop_assert!(
-                (all[t] - individual).abs() < 1e-5,
-                "score_all_tails[{t}]={} vs score()={individual}", all[t]
+                (score - individual).abs() < 1e-5,
+                "score_all_tails[{t}]={score} vs score()={individual}"
             );
         }
     }
@@ -60,11 +60,11 @@ proptest! {
     ) {
         let model = TransE::new(N_ENT, N_REL, DIM);
         let all = model.score_all_heads(r, t);
-        for h in 0..N_ENT {
+        for (h, &score) in all.iter().enumerate() {
             let individual = model.score(h, r, t);
             prop_assert!(
-                (all[h] - individual).abs() < 1e-5,
-                "score_all_heads[{h}]={} vs score()={individual}", all[h]
+                (score - individual).abs() < 1e-5,
+                "score_all_heads[{h}]={score} vs score()={individual}"
             );
         }
     }
@@ -105,11 +105,11 @@ proptest! {
     ) {
         let model = RotatE::new(N_ENT, N_REL, DIM, 12.0);
         let all = model.score_all_tails(h, r);
-        for t in 0..N_ENT {
+        for (t, &score) in all.iter().enumerate() {
             let individual = model.score(h, r, t);
             prop_assert!(
-                (all[t] - individual).abs() < 1e-4,
-                "RotatE score_all_tails[{t}]={} vs score()={individual}", all[t]
+                (score - individual).abs() < 1e-4,
+                "RotatE score_all_tails[{t}]={score} vs score()={individual}"
             );
         }
     }
@@ -138,11 +138,11 @@ proptest! {
     ) {
         let model = ComplEx::new(N_ENT, N_REL, DIM);
         let all = model.score_all_tails(h, r);
-        for t in 0..N_ENT {
+        for (t, &score) in all.iter().enumerate() {
             let individual = model.score(h, r, t);
             prop_assert!(
-                (all[t] - individual).abs() < 1e-4,
-                "ComplEx score_all_tails[{t}]={} vs score()={individual}", all[t]
+                (score - individual).abs() < 1e-4,
+                "ComplEx score_all_tails[{t}]={score} vs score()={individual}"
             );
         }
     }
@@ -186,11 +186,11 @@ proptest! {
     ) {
         let model = DistMult::new(N_ENT, N_REL, DIM);
         let all = model.score_all_tails(h, r);
-        for t in 0..N_ENT {
+        for (t, &score) in all.iter().enumerate() {
             let individual = model.score(h, r, t);
             prop_assert!(
-                (all[t] - individual).abs() < 1e-4,
-                "DistMult score_all_tails[{t}]={} vs score()={individual}", all[t]
+                (score - individual).abs() < 1e-4,
+                "DistMult score_all_tails[{t}]={score} vs score()={individual}"
             );
         }
     }
