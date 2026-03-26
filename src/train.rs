@@ -109,6 +109,9 @@ pub struct TrainConfig {
     /// Label smoothing epsilon for 1-N mode. 0 = no smoothing.
     /// Recommended: 0.1. Replaces hard 0/1 targets with (eps, 1-eps).
     pub label_smoothing: f32,
+    /// Use multi-hot targets in 1-N mode (KvsAll). If false, uses single-target
+    /// CE (1vsAll, as in Lacroix et al. 2018). Default: false (1vsAll).
+    pub multi_hot: bool,
     /// Margin gamma for the loss function (used in negative sampling mode).
     pub gamma: f32,
     /// Norm for distance-based models (TransE, RotatE). 1 = L1, 2 = L2.
@@ -168,6 +171,7 @@ impl Default for TrainConfig {
             num_negatives: 256,
             one_to_n: false,
             label_smoothing: 0.0,
+            multi_hot: false,
             gamma: 12.0,
             distance_norm: 1,
             subsampling: false,
@@ -803,45 +807,72 @@ pub fn train_with_validation(
                 let tail_scores = model.score_1n(&heads, &rels)?;
                 let tail_log_probs = candle_nn::ops::log_softmax(&tail_scores, D::Minus1)?;
 
-                // Build multi-hot target using preallocated buffer.
-                let kt = known_tails.as_ref().unwrap();
-                let tgt = &mut tail_target_buf[..actual_bs * num_entities];
-                tgt.fill(0.0);
-                for (i, &(h, r, _)) in batch.iter().enumerate() {
-                    let tails = kt.get(&(h, r)).unwrap();
-                    let w = 1.0 / tails.len() as f32;
-                    for &t in tails {
-                        tgt[i * num_entities + t] = w;
-                    }
-                }
-                let tail_target_t =
-                    Tensor::from_slice(tgt, (actual_bs, num_entities), &model.device)?;
-                // NLL = -sum(target * log_probs) / batch
-                let tail_nll = (&tail_target_t * &tail_log_probs)?
-                    .sum_all()?
-                    .neg()?
-                    .affine(1.0 / actual_bs as f64, 0.0)?;
-
                 // Head prediction: score all entities as heads for (?, r, t).
                 let head_scores = model.score_1n_heads(&rels, &tails)?;
                 let head_log_probs = candle_nn::ops::log_softmax(&head_scores, D::Minus1)?;
 
-                let kh = known_heads.as_ref().unwrap();
-                let htgt = &mut head_target_buf[..actual_bs * num_entities];
-                htgt.fill(0.0);
-                for (i, &(_, r, t)) in batch.iter().enumerate() {
-                    let heads = kh.get(&(r, t)).unwrap();
-                    let w = 1.0 / heads.len() as f32;
-                    for &h in heads {
-                        htgt[i * num_entities + h] = w;
+                let (tail_nll, head_nll) = if config.multi_hot {
+                    // KvsAll: multi-hot targets (all known tails/heads).
+                    let kt = known_tails.as_ref().unwrap();
+                    let tgt = &mut tail_target_buf[..actual_bs * num_entities];
+                    tgt.fill(0.0);
+                    for (i, &(h, r, _)) in batch.iter().enumerate() {
+                        let tails = kt.get(&(h, r)).unwrap();
+                        let w = 1.0 / tails.len() as f32;
+                        for &t in tails {
+                            tgt[i * num_entities + t] = w;
+                        }
                     }
-                }
-                let head_target_t =
-                    Tensor::from_slice(htgt, (actual_bs, num_entities), &model.device)?;
-                let head_nll = (&head_target_t * &head_log_probs)?
-                    .sum_all()?
-                    .neg()?
-                    .affine(1.0 / actual_bs as f64, 0.0)?;
+                    let tail_t = Tensor::from_slice(tgt, (actual_bs, num_entities), &model.device)?;
+                    let t_nll = (&tail_t * &tail_log_probs)?
+                        .sum_all()?
+                        .neg()?
+                        .affine(1.0 / actual_bs as f64, 0.0)?;
+
+                    let kh = known_heads.as_ref().unwrap();
+                    let htgt = &mut head_target_buf[..actual_bs * num_entities];
+                    htgt.fill(0.0);
+                    for (i, &(_, r, t)) in batch.iter().enumerate() {
+                        let heads = kh.get(&(r, t)).unwrap();
+                        let w = 1.0 / heads.len() as f32;
+                        for &h in heads {
+                            htgt[i * num_entities + h] = w;
+                        }
+                    }
+                    let head_t =
+                        Tensor::from_slice(htgt, (actual_bs, num_entities), &model.device)?;
+                    let h_nll = (&head_t * &head_log_probs)?
+                        .sum_all()?
+                        .neg()?
+                        .affine(1.0 / actual_bs as f64, 0.0)?;
+
+                    (t_nll, h_nll)
+                } else {
+                    // 1vsAll: single-target CE via gather (Lacroix 2018).
+                    let tail_ids = Tensor::from_vec(
+                        batch.iter().map(|&(_, _, t)| t as u32).collect::<Vec<_>>(),
+                        actual_bs,
+                        &model.device,
+                    )?;
+                    let t_nll = tail_log_probs
+                        .gather(&tail_ids.unsqueeze(1)?, 1)?
+                        .squeeze(1)?
+                        .neg()?
+                        .mean_all()?;
+
+                    let head_ids = Tensor::from_vec(
+                        batch.iter().map(|&(h, _, _)| h as u32).collect::<Vec<_>>(),
+                        actual_bs,
+                        &model.device,
+                    )?;
+                    let h_nll = head_log_probs
+                        .gather(&head_ids.unsqueeze(1)?, 1)?
+                        .squeeze(1)?
+                        .neg()?
+                        .mean_all()?;
+
+                    (t_nll, h_nll)
+                };
 
                 // Average head and tail losses.
                 let nll = ((tail_nll + head_nll)? * 0.5)?;
