@@ -369,6 +369,26 @@ impl TrainableModel {
         Ok(penalty)
     }
 
+    /// Model type.
+    pub fn model_type(&self) -> ModelType {
+        self.model_type
+    }
+
+    /// Embedding dimension.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Access the raw entity embedding tensor.
+    pub fn entity_embeddings(&self) -> &Tensor {
+        self.entity_embeddings.as_tensor()
+    }
+
+    /// Access the raw relation embedding tensor.
+    pub fn relation_embeddings(&self) -> &Tensor {
+        self.relation_embeddings.as_tensor()
+    }
+
     /// Extract entity embeddings as `Vec<Vec<f32>>`.
     pub fn entity_vecs(&self) -> Result<Vec<Vec<f32>>> {
         tensor_to_vecs(self.entity_embeddings.as_tensor())
