@@ -6,7 +6,7 @@ Train on any triple file, export embeddings, predict missing links. 1-N scoring 
 
 ```toml
 [dependencies]
-tranz = "0.3.0"
+tranz = "0.3.1"
 ```
 
 Dual-licensed under MIT or Apache-2.0.
@@ -41,12 +41,13 @@ tranz predict --embeddings embeddings/ --model distmult \
 
 ## Benchmark: WN18RR
 
-| Model | Mode | Epochs | MRR | H@1 | H@10 |
-|-------|------|--------|-----|-----|------|
-| DistMult | 1-N + label smoothing | 50 | 0.341 | 0.329 | 0.362 |
-| TransE | neg. sampling (SANS) | 100 | 0.156 | 0.002 | 0.421 |
+| Model | Mode | Dim | Epochs | MRR | H@1 | H@10 |
+|-------|------|-----|--------|-----|-----|------|
+| ComplEx | 1-N + softmax CE | 50 | 10 | 0.361 | 0.354 | 0.372 |
+| DistMult | 1-N + softmax CE | 50 | 10 | 0.298 | 0.269 | 0.347 |
+| TransE | neg. sampling (SANS) | 100 | 100 | 0.156 | 0.002 | 0.421 |
 
-1-N scoring converges much faster than negative sampling. Published DistMult MRR on WN18RR is ~0.43 at convergence.
+1-N scoring with softmax cross-entropy converges much faster than negative sampling. Published ComplEx MRR on WN18RR is ~0.47 at convergence (dim=2000).
 
 ## Library usage
 
