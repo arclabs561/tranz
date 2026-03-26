@@ -67,6 +67,9 @@ pub struct TrainConfig {
     pub embedding_dropout: f32,
     /// N3 regularization coefficient. 0 = disabled.
     pub n3_reg: f32,
+    /// L2 regularization coefficient on embeddings. 0 = disabled.
+    /// Simpler and more universally effective than N3. Recommended: 1e-5 to 1e-3.
+    pub l2_reg: f32,
     /// Batch size.
     pub batch_size: usize,
     /// Number of training epochs.
@@ -105,6 +108,7 @@ impl Default for TrainConfig {
             lr: 0.001,
             embedding_dropout: 0.0,
             n3_reg: 0.0,
+            l2_reg: 0.0,
             batch_size: 512,
             epochs: 1000,
             normalize_entities: false,
@@ -781,6 +785,24 @@ pub fn train_with_validation(
             if n3_coeff > 0.0 {
                 let n3 = model.n3_penalty(&heads, &rels, &tails)?;
                 loss = (loss + (n3 * n3_coeff as f64)?)?;
+            }
+
+            // L2 regularization on used embeddings.
+            if config.l2_reg > 0.0 {
+                let h = model
+                    .entity_embeddings
+                    .as_tensor()
+                    .index_select(&heads, 0)?;
+                let r = model
+                    .relation_embeddings
+                    .as_tensor()
+                    .index_select(&rels, 0)?;
+                let t = model
+                    .entity_embeddings
+                    .as_tensor()
+                    .index_select(&tails, 0)?;
+                let l2 = ((h.sqr()?.mean_all()? + r.sqr()?.mean_all()?)? + t.sqr()?.mean_all()?)?;
+                loss = (loss + (l2 * config.l2_reg as f64)?)?;
             }
 
             optimizer.backward_step(&loss)?;
