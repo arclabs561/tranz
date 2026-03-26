@@ -187,6 +187,50 @@ impl Scorer for TransE {
     fn num_entities(&self) -> usize {
         self.entities.len()
     }
+
+    fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
+        let h = &self.entities[head];
+        let r = &self.relations[relation];
+        let dim = self.dim;
+        // Precompute h + r once.
+        let mut hr = vec![0.0_f64; dim];
+        for i in 0..dim {
+            hr[i] = h[i] as f64 + r[i] as f64;
+        }
+        self.entities
+            .iter()
+            .map(|t| {
+                let mut dist_sq = 0.0_f64;
+                for i in 0..dim {
+                    let d = hr[i] - t[i] as f64;
+                    dist_sq += d * d;
+                }
+                dist_sq.sqrt() as f32
+            })
+            .collect()
+    }
+
+    fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
+        let r = &self.relations[relation];
+        let t = &self.entities[tail];
+        let dim = self.dim;
+        // Precompute r - t once (since h + r - t = h - (t - r)).
+        let mut neg_rt = vec![0.0_f64; dim];
+        for i in 0..dim {
+            neg_rt[i] = r[i] as f64 - t[i] as f64;
+        }
+        self.entities
+            .iter()
+            .map(|h| {
+                let mut dist_sq = 0.0_f64;
+                for i in 0..dim {
+                    let d = h[i] as f64 + neg_rt[i];
+                    dist_sq += d * d;
+                }
+                dist_sq.sqrt() as f32
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +571,27 @@ impl Scorer for DistMult {
 
     fn num_entities(&self) -> usize {
         self.entities.len()
+    }
+
+    fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
+        let h = &self.entities[head];
+        let r = &self.relations[relation];
+        let dim = self.dim;
+        // Precompute h * r once.
+        let mut hr = vec![0.0_f64; dim];
+        for i in 0..dim {
+            hr[i] = h[i] as f64 * r[i] as f64;
+        }
+        self.entities
+            .iter()
+            .map(|t| {
+                let mut dot = 0.0_f64;
+                for i in 0..dim {
+                    dot += hr[i] * t[i] as f64;
+                }
+                -(dot as f32) // negate for distance convention
+            })
+            .collect()
     }
 }
 
