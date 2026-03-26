@@ -722,6 +722,18 @@ pub fn train_with_validation(
         (None, None)
     };
 
+    // Preallocate target buffers for multi-hot 1-N mode (outside epoch loop).
+    let mut tail_target_buf = if config.one_to_n && config.multi_hot {
+        vec![0.0_f32; batch_size * num_entities]
+    } else {
+        Vec::new()
+    };
+    let mut head_target_buf = if config.one_to_n && config.multi_hot {
+        vec![0.0_f32; batch_size * num_entities]
+    } else {
+        Vec::new()
+    };
+
     // Precompute entity frequency for optional subsampling weights.
     let entity_freq = if config.subsampling {
         let mut freq = vec![0u32; num_entities];
@@ -773,18 +785,6 @@ pub fn train_with_validation(
             use rand::seq::SliceRandom;
             shuffled.shuffle(&mut rand::rng());
         }
-
-        // Preallocate target buffers for 1-N mode to avoid per-batch allocation.
-        let mut tail_target_buf = if config.one_to_n {
-            vec![0.0_f32; batch_size * num_entities]
-        } else {
-            Vec::new()
-        };
-        let mut head_target_buf = if config.one_to_n {
-            vec![0.0_f32; batch_size * num_entities]
-        } else {
-            Vec::new()
-        };
 
         let mut offset = 0;
         while offset < n_triples {
@@ -929,7 +929,7 @@ pub fn train_with_validation(
                     .reshape((actual_bs, config.num_negatives))?;
 
                 let neg_weights = if alpha > 0.0 {
-                    let scaled = (neg_scores.detach() * (-(alpha as f64)))?.detach();
+                    let scaled = (neg_scores.detach() * (-(alpha as f64)))?;
                     candle_nn::ops::softmax(&scaled, D::Minus1)?
                 } else {
                     Tensor::ones((actual_bs, config.num_negatives), DType::F32, &model.device)?
@@ -987,6 +987,8 @@ pub fn train_with_validation(
                 model.entity_embeddings.set(&normalized)?;
             }
 
+            // Accumulate loss. to_scalar forces GPU sync -- acceptable per batch
+            // since we need the value for epoch averaging.
             epoch_loss += loss.to_scalar::<f32>()? as f64;
             n_batches += 1;
         }
