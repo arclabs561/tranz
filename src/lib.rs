@@ -972,4 +972,56 @@ mod tests {
             assert!(w[0].1 <= w[1].1);
         }
     }
+
+    // -- TransE norm --------------------------------------------------------
+
+    #[test]
+    fn transe_l1_vs_l2_differ() {
+        let entities = vec![vec![3.0, 0.0], vec![0.0, 4.0]];
+        let relations = vec![vec![0.0, 0.0]];
+        let l1 = TransE::from_vecs_with_norm(entities.clone(), relations.clone(), 2, 1);
+        let l2 = TransE::from_vecs_with_norm(entities, relations, 2, 2);
+        let s1 = l1.score_triple(0, 0, 1); // |3|+|4| = 7
+        let s2 = l2.score_triple(0, 0, 1); // sqrt(9+16) = 5
+        assert!((s1 - 7.0).abs() < 1e-4, "L1 score should be 7, got {s1}");
+        assert!((s2 - 5.0).abs() < 1e-4, "L2 score should be 5, got {s2}");
+    }
+
+    #[test]
+    fn transe_l1_score_all_tails_consistent() {
+        let model = TransE::from_vecs_with_norm(
+            vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]],
+            vec![vec![0.0, 0.0]],
+            2,
+            1,
+        );
+        let all = model.score_all_tails(0, 0);
+        for (t, &score) in all.iter().enumerate() {
+            let individual = model.score(0, 0, t);
+            assert!(
+                (score - individual).abs() < 1e-5,
+                "L1 score_all_tails[{t}]={score} vs score()={individual}"
+            );
+        }
+    }
+
+    // -- Relation prediction ------------------------------------------------
+
+    #[test]
+    fn relation_prediction_returns_correct_count() {
+        let model = DistMult::new(10, 5, 8);
+        let scores = model.score_all_relations(0, 1, 5);
+        assert_eq!(scores.len(), 5);
+        assert!(scores.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn top_k_relations_sorted() {
+        let model = ComplEx::new(10, 5, 8);
+        let top = model.top_k_relations(0, 1, 5, 3);
+        assert_eq!(top.len(), 3);
+        for w in top.windows(2) {
+            assert!(w[0].1 <= w[1].1);
+        }
+    }
 }
