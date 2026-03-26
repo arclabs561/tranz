@@ -126,11 +126,6 @@ fn cmd_predict(args: &[String]) {
         i += 1;
     }
 
-    let rel_name = relation.unwrap_or_else(|| {
-        eprintln!("--relation is required");
-        std::process::exit(1);
-    });
-
     // Load embeddings.
     let loaded = load_embeddings(&embeddings_dir).unwrap_or_else(|e| {
         eprintln!("Failed to load embeddings: {e}");
@@ -153,10 +148,12 @@ fn cmd_predict(args: &[String]) {
         .map(|(i, n)| (n.as_str(), i))
         .collect();
 
-    let rel_id = *rel_map.get(rel_name.as_str()).unwrap_or_else(|| {
-        eprintln!("Unknown relation: {rel_name}");
-        eprintln!("Available: {}", rel_names.join(", "));
-        std::process::exit(1);
+    let rel_id = relation.as_ref().map(|rel_name| {
+        *rel_map.get(rel_name.as_str()).unwrap_or_else(|| {
+            eprintln!("Unknown relation: {rel_name}");
+            eprintln!("Available: {}", rel_names.join(", "));
+            std::process::exit(1);
+        })
     });
 
     // Determine embedding dim.
@@ -180,12 +177,13 @@ fn cmd_predict(args: &[String]) {
         }
     };
 
-    if let Some(head_name) = &head {
+    if let (Some(head_name), Some(rel_id)) = (&head, rel_id) {
         // Tail prediction: (head, relation, ?)
         let head_id = *ent_map.get(head_name.as_str()).unwrap_or_else(|| {
             eprintln!("Unknown entity: {head_name}");
             std::process::exit(1);
         });
+        let rel_name = relation.as_ref().unwrap();
         let results = scorer.top_k_tails(head_id, rel_id, k);
         println!("Top-{k} tail predictions for ({head_name}, {rel_name}, ?):");
         for (rank, (ent_id, score)) in results.iter().enumerate() {
@@ -196,12 +194,13 @@ fn cmd_predict(args: &[String]) {
                 score
             );
         }
-    } else if let Some(tail_name) = &tail {
+    } else if let (Some(tail_name), Some(rel_id)) = (&tail, rel_id) {
         // Head prediction: (?, relation, tail)
         let tail_id = *ent_map.get(tail_name.as_str()).unwrap_or_else(|| {
             eprintln!("Unknown entity: {tail_name}");
             std::process::exit(1);
         });
+        let rel_name = relation.as_ref().unwrap();
         let results = scorer.top_k_heads(rel_id, tail_id, k);
         println!("Top-{k} head predictions for (?, {rel_name}, {tail_name}):");
         for (rank, (ent_id, score)) in results.iter().enumerate() {
@@ -212,8 +211,30 @@ fn cmd_predict(args: &[String]) {
                 score
             );
         }
+    } else if head.is_some() && tail.is_some() && relation.is_none() {
+        // Relation prediction: (head, ?, tail)
+        let head_name = head.as_ref().unwrap();
+        let tail_name = tail.as_ref().unwrap();
+        let head_id = *ent_map.get(head_name.as_str()).unwrap_or_else(|| {
+            eprintln!("Unknown entity: {head_name}");
+            std::process::exit(1);
+        });
+        let tail_id = *ent_map.get(tail_name.as_str()).unwrap_or_else(|| {
+            eprintln!("Unknown entity: {tail_name}");
+            std::process::exit(1);
+        });
+        let results = scorer.top_k_relations(head_id, tail_id, rel_names.len(), k);
+        println!("Top-{k} relation predictions for ({head_name}, ?, {tail_name}):");
+        for (rank, (rel_id, score)) in results.iter().enumerate() {
+            println!(
+                "  {:>3}. {:<30} score={:.4}",
+                rank + 1,
+                &rel_names[*rel_id],
+                score
+            );
+        }
     } else {
-        eprintln!("Specify --head <NAME> for tail prediction or --tail <NAME> for head prediction");
+        eprintln!("Specify --head + --relation for tail prediction, --tail + --relation for head prediction, or --head + --tail for relation prediction");
         std::process::exit(1);
     }
 }
