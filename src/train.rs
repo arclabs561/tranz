@@ -377,8 +377,8 @@ impl TrainableModel {
                 let r_im = r.i((.., dim..))?;
                 let hr_re = ((&h_re * &r_re)? - (&h_im * &r_im)?)?;
                 let hr_im = ((&h_re * &r_im)? + (&h_im * &r_re)?)?;
-                let e_re = ent_matrix.i((.., ..dim))?;
-                let e_im = ent_matrix.i((.., dim..))?;
+                let e_re = ent_matrix.i((.., ..dim))?.contiguous()?;
+                let e_im = ent_matrix.i((.., dim..))?.contiguous()?;
                 // Re(hr * conj(e)) = hr_re @ e_re^T + hr_im @ e_im^T
                 let score = (hr_re.matmul(&e_re.t()?)? + hr_im.matmul(&e_im.t()?)?)?;
                 Ok(score) // higher = more likely
@@ -450,8 +450,8 @@ impl TrainableModel {
                 let t_im = t.i((.., dim..))?;
                 let rc_re = ((&r_re * &t_re)? + (&r_im * &t_im)?)?;
                 let rc_im = ((&r_im * &t_re)? - (&r_re * &t_im)?)?;
-                let e_re = ent_matrix.i((.., ..dim))?;
-                let e_im = ent_matrix.i((.., dim..))?;
+                let e_re = ent_matrix.i((.., ..dim))?.contiguous()?;
+                let e_im = ent_matrix.i((.., dim..))?.contiguous()?;
                 // Re(h * rc) = h_re @ rc_re^T ... wait, we need h @ rc not rc @ h
                 // Actually: Re(h * rc) = h_re*rc_re - h_im*rc_im
                 // As matmul: e_re @ rc_re^T + e_im @ (-rc_im)^T
