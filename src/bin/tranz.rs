@@ -44,7 +44,8 @@ USAGE:
 TRAIN OPTIONS:
     --data <DIR>          WN18RR-format directory (train.txt, valid.txt, test.txt)
     --triples <FILE>      Single TSV/CSV triple file (auto-split 80/10/10)
-    --model <MODEL>       transe, rotate, complex, distmult (default: transe)
+    --model <MODEL>       complex, distmult, rotate, transe (default: transe)
+                          Recommended: complex --1n --label-smoothing 0.1
     --dim <N>             Embedding dimension (default: 200)
     --epochs <N>          Training epochs (default: 500)
     --batch-size <N>      Batch size (default: 512)

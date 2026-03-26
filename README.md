@@ -26,7 +26,7 @@ Install with `cargo install tranz --features candle`.
 
 ```sh
 # Train with 1-N scoring (recommended)
-tranz train --data data/WN18RR/ --model distmult --dim 200 \
+tranz train --data data/WN18RR/ --model complex --dim 200 \
     --1n --label-smoothing 0.1 --reciprocals \
     --epochs 100 --lr 0.001 --output embeddings/ --eval
 
