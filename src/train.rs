@@ -591,6 +591,8 @@ pub struct TrainResult {
     pub model: TrainableModel,
     /// Loss per epoch (averaged over batches).
     pub losses: Vec<f32>,
+    /// Seconds per epoch.
+    pub epoch_times: Vec<f32>,
 }
 
 /// Validation data for early stopping.
@@ -710,6 +712,7 @@ pub fn train_with_validation(
     };
 
     let mut losses = Vec::with_capacity(config.epochs);
+    let mut epoch_times = Vec::with_capacity(config.epochs);
     let mut shuffled: Vec<(usize, usize, usize)> = train_triples.to_vec();
     let mut best_mrr = f32::NEG_INFINITY;
     let mut patience_counter = 0_usize;
@@ -727,6 +730,7 @@ pub fn train_with_validation(
 
         let mut epoch_loss = 0.0_f64;
         let mut n_batches = 0u32;
+        let epoch_start = std::time::Instant::now();
 
         // Shuffle triples each epoch.
         {
@@ -926,9 +930,25 @@ pub fn train_with_validation(
 
         let avg_loss = (epoch_loss / n_batches as f64) as f32;
         losses.push(avg_loss);
+        epoch_times.push(epoch_start.elapsed().as_secs_f32());
 
         if config.log_interval > 0 && (_epoch + 1) % config.log_interval == 0 {
-            eprintln!("epoch {:>4} | loss {:.4}", _epoch + 1, avg_loss);
+            let epoch_secs = epoch_start.elapsed().as_secs_f32();
+            let ent_norm = model
+                .entity_embeddings
+                .as_tensor()
+                .sqr()
+                .and_then(|t| t.mean_all())
+                .and_then(|t| t.to_scalar::<f32>())
+                .map(|v| v.sqrt())
+                .unwrap_or(0.0);
+            eprintln!(
+                "epoch {:>4} | loss {:.4} | {:.1}s | emb_rms {:.4}",
+                _epoch + 1,
+                avg_loss,
+                epoch_secs,
+                ent_norm,
+            );
         }
 
         // Checkpoint save.
@@ -977,7 +997,11 @@ pub fn train_with_validation(
         }
     }
 
-    Ok(TrainResult { model, losses })
+    Ok(TrainResult {
+        model,
+        losses,
+        epoch_times,
+    })
 }
 
 /// Numerically stable `log(sigmoid(x))`.
