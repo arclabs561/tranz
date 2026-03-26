@@ -24,6 +24,7 @@ fn main() {
     match args[1].as_str() {
         "train" => cmd_train(&args[2..]),
         "predict" => cmd_predict(&args[2..]),
+        "eval" => cmd_eval(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
         other => {
             eprintln!("Unknown command: {other}");
@@ -500,6 +501,129 @@ fn cmd_train(args: &[String]) {
                     metrics.mrr, metrics.hits_at_10
                 );
             }
+        }
+    }
+}
+
+fn cmd_eval(args: &[String]) {
+    use tranz::dataset;
+    use tranz::eval::evaluate_link_prediction_detailed;
+    use tranz::io::load_embeddings;
+    use tranz::Scorer;
+
+    let mut data_dir: Option<PathBuf> = None;
+    let mut embeddings_dir = PathBuf::from("output");
+    let mut model_name = "transe".to_string();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--data" => {
+                i += 1;
+                data_dir = Some(PathBuf::from(&args[i]));
+            }
+            "--embeddings" => {
+                i += 1;
+                embeddings_dir = PathBuf::from(&args[i]);
+            }
+            "--model" => {
+                i += 1;
+                model_name = args[i].clone();
+            }
+            other => {
+                eprintln!("Unknown argument: {other}");
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let data_path = data_dir.unwrap_or_else(|| {
+        eprintln!("--data <DIR> is required for eval");
+        std::process::exit(1);
+    });
+
+    eprintln!("Loading dataset from {}", data_path.display());
+    let ds = dataset::load_dataset(&data_path).unwrap_or_else(|e| {
+        eprintln!("Failed: {e}");
+        std::process::exit(1);
+    });
+    let interned = ds.into_interned();
+
+    eprintln!("Loading embeddings from {}", embeddings_dir.display());
+    let loaded = load_embeddings(&embeddings_dir).unwrap_or_else(|e| {
+        eprintln!("Failed: {e}");
+        std::process::exit(1);
+    });
+
+    let emb_dim = loaded.entity_vecs[0].len();
+    let scorer: Box<dyn Scorer + Sync> = match model_name.as_str() {
+        "transe" => Box::new(tranz::TransE::from_vecs(
+            loaded.entity_vecs,
+            loaded.relation_vecs,
+            emb_dim,
+        )),
+        "distmult" => Box::new(tranz::DistMult::from_vecs(
+            loaded.entity_vecs,
+            loaded.relation_vecs,
+            emb_dim,
+        )),
+        "complex" => {
+            let dim = emb_dim / 2;
+            Box::new(tranz::ComplEx::from_vecs(
+                loaded.entity_vecs,
+                loaded.relation_vecs,
+                dim,
+            ))
+        }
+        "rotate" => {
+            let dim = emb_dim / 2;
+            Box::new(tranz::RotatE::from_vecs(
+                loaded.entity_vecs,
+                loaded.relation_vecs,
+                dim,
+                12.0,
+            ))
+        }
+        other => {
+            eprintln!("Unknown model: {other}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!(
+        "Evaluating on test set ({} triples)...",
+        interned.test.len()
+    );
+    let all_triples = interned.all_triples();
+    let result = evaluate_link_prediction_detailed(
+        scorer.as_ref(),
+        &interned.test,
+        &all_triples,
+        interned.num_entities(),
+    );
+
+    let m = result.metrics;
+    println!("MRR:      {:.4}", m.mrr);
+    println!("Hits@1:   {:.4}", m.hits_at_1);
+    println!("Hits@3:   {:.4}", m.hits_at_3);
+    println!("Hits@10:  {:.4}", m.hits_at_10);
+
+    if !result.per_relation.is_empty() {
+        println!();
+        println!("Per-relation MRR:");
+        let mut rels: Vec<_> = result.per_relation.iter().collect();
+        rels.sort_by_key(|&(id, _)| *id);
+        for (&rel_id, metrics) in &rels {
+            let name = interned
+                .id_to_relation
+                .get(rel_id)
+                .map(|s| s.as_str())
+                .unwrap_or("?");
+            println!(
+                "  {name:<30} MRR={:.4}  H@10={:.4}",
+                metrics.mrr, metrics.hits_at_10
+            );
         }
     }
 }
