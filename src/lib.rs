@@ -145,6 +145,8 @@ pub struct TransE {
     entities: Vec<Vec<f32>>,
     relations: Vec<Vec<f32>>,
     dim: usize,
+    /// Distance norm: 1 = L1, 2 = L2 (default).
+    norm: u32,
 }
 
 impl TransE {
@@ -175,6 +177,24 @@ impl TransE {
             entities,
             relations,
             dim,
+            norm: 2,
+        }
+    }
+
+    /// Create with a specific distance norm (1 = L1, 2 = L2).
+    pub fn from_vecs_with_norm(
+        entities: Vec<Vec<f32>>,
+        relations: Vec<Vec<f32>>,
+        dim: usize,
+        norm: u32,
+    ) -> Self {
+        assert_dims(&entities, dim, "entity");
+        assert_dims(&relations, dim, "relation");
+        Self {
+            entities,
+            relations,
+            dim,
+            norm,
         }
     }
 
@@ -193,18 +213,34 @@ impl TransE {
         self.dim
     }
 
-    /// Score a triple (h, r, t) via L2 distance of `h + r - t`.
+    /// Distance norm (1 = L1, 2 = L2).
+    pub fn norm(&self) -> u32 {
+        self.norm
+    }
+
+    /// Score a triple (h, r, t) via distance `||h + r - t||`.
     pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
         let h = &self.entities[head];
         let r = &self.relations[relation];
         let t = &self.entities[tail];
 
-        let mut dist_sq = 0.0_f64;
-        for i in 0..self.dim {
-            let d = h[i] as f64 + r[i] as f64 - t[i] as f64;
-            dist_sq += d * d;
+        match self.norm {
+            1 => {
+                let mut dist = 0.0_f64;
+                for i in 0..self.dim {
+                    dist += (h[i] as f64 + r[i] as f64 - t[i] as f64).abs();
+                }
+                dist as f32
+            }
+            _ => {
+                let mut dist_sq = 0.0_f64;
+                for i in 0..self.dim {
+                    let d = h[i] as f64 + r[i] as f64 - t[i] as f64;
+                    dist_sq += d * d;
+                }
+                dist_sq.sqrt() as f32
+            }
         }
-        dist_sq.sqrt() as f32
     }
 }
 
@@ -221,7 +257,7 @@ impl Scorer for TransE {
         let h = &self.entities[head];
         let r = &self.relations[relation];
         let dim = self.dim;
-        // Precompute h + r once.
+        let norm = self.norm;
         let mut hr = vec![0.0_f64; dim];
         for i in 0..dim {
             hr[i] = h[i] as f64 + r[i] as f64;
@@ -229,12 +265,20 @@ impl Scorer for TransE {
         self.entities
             .iter()
             .map(|t| {
-                let mut dist_sq = 0.0_f64;
-                for i in 0..dim {
-                    let d = hr[i] - t[i] as f64;
-                    dist_sq += d * d;
+                if norm == 1 {
+                    let mut dist = 0.0_f64;
+                    for i in 0..dim {
+                        dist += (hr[i] - t[i] as f64).abs();
+                    }
+                    dist as f32
+                } else {
+                    let mut dist_sq = 0.0_f64;
+                    for i in 0..dim {
+                        let d = hr[i] - t[i] as f64;
+                        dist_sq += d * d;
+                    }
+                    dist_sq.sqrt() as f32
                 }
-                dist_sq.sqrt() as f32
             })
             .collect()
     }
@@ -243,7 +287,7 @@ impl Scorer for TransE {
         let r = &self.relations[relation];
         let t = &self.entities[tail];
         let dim = self.dim;
-        // Precompute r - t once (since h + r - t = h - (t - r)).
+        let norm = self.norm;
         let mut neg_rt = vec![0.0_f64; dim];
         for i in 0..dim {
             neg_rt[i] = r[i] as f64 - t[i] as f64;
@@ -251,12 +295,20 @@ impl Scorer for TransE {
         self.entities
             .iter()
             .map(|h| {
-                let mut dist_sq = 0.0_f64;
-                for i in 0..dim {
-                    let d = h[i] as f64 + neg_rt[i];
-                    dist_sq += d * d;
+                if norm == 1 {
+                    let mut dist = 0.0_f64;
+                    for i in 0..dim {
+                        dist += (h[i] as f64 + neg_rt[i]).abs();
+                    }
+                    dist as f32
+                } else {
+                    let mut dist_sq = 0.0_f64;
+                    for i in 0..dim {
+                        let d = h[i] as f64 + neg_rt[i];
+                        dist_sq += d * d;
+                    }
+                    dist_sq.sqrt() as f32
                 }
-                dist_sq.sqrt() as f32
             })
             .collect()
     }

@@ -559,10 +559,11 @@ impl TrainableModel {
 
     /// Convert to a CPU-based TransE model for evaluation.
     pub fn to_transe(&self) -> Result<crate::TransE> {
-        Ok(crate::TransE::from_vecs(
+        Ok(crate::TransE::from_vecs_with_norm(
             self.entity_vecs()?,
             self.relation_vecs()?,
             self.dim,
+            self.distance_norm,
         ))
     }
 
