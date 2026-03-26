@@ -244,6 +244,8 @@ fn cmd_train(args: &[String]) {
     let mut log_interval = 10_usize;
     let mut output_dir = PathBuf::from("output");
     let mut do_eval = false;
+    let mut one_to_n = false;
+    let mut label_smoothing = 0.0_f32;
 
     let mut i = 0;
     while i < args.len() {
@@ -326,6 +328,13 @@ fn cmd_train(args: &[String]) {
             "--eval" => {
                 do_eval = true;
             }
+            "--1n" | "--one-to-n" => {
+                one_to_n = true;
+            }
+            "--label-smoothing" => {
+                i += 1;
+                label_smoothing = args[i].parse().unwrap();
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
@@ -378,6 +387,8 @@ fn cmd_train(args: &[String]) {
         lr,
         n3_reg,
         distance_norm,
+        one_to_n,
+        label_smoothing,
         batch_size,
         epochs,
         normalize_entities: normalize,
