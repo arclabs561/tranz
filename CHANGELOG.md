@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 (2026-03-26)
+
+- Adagrad optimizer (proven for KGE by Lacroix et al. 2018)
+- Configurable init scale (N(0, 1e-3) default, matching kbc reference)
+- Fixed N3 regularization for ComplEx: operates on complex moduli
+- 1vsAll mode (single-target CE, default) vs KvsAll (multi-hot) toggle
+- Bidirectional 1-N scoring (head + tail prediction)
+- Multi-hot label support for KvsAll mode
+- SnapE cosine annealing with snapshot collection
+- L2 regularization on embeddings
+- Mean Rank metric in evaluation
+- Per-epoch timing and embedding RMS diagnostics
+- Preallocated target buffers (eliminates ~55GB/epoch allocation)
+- CUDA support via --gpu flag
+- 69 tests
+- ComplEx achieves MRR=0.438 on WN18RR (92% of published 0.475)
+
 ## 0.3.1 (2026-03-26)
 
 - Fix ComplEx 1-N training: switch from BCE to softmax cross-entropy loss
