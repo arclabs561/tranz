@@ -33,6 +33,8 @@ use crate::Scorer;
 pub struct Metrics {
     /// Mean Reciprocal Rank (filtered).
     pub mrr: f32,
+    /// Mean Rank (filtered). Lower = better.
+    pub mean_rank: f32,
     /// Hits@1 (filtered).
     pub hits_at_1: f32,
     /// Hits@3 (filtered).
@@ -154,6 +156,7 @@ fn compute_metrics(ranks: &[u32]) -> Metrics {
     let n = ranks.len() as f32;
     Metrics {
         mrr: ranks.iter().map(|&r| 1.0 / r as f32).sum::<f32>() / n,
+        mean_rank: ranks.iter().map(|&r| r as f32).sum::<f32>() / n,
         hits_at_1: ranks.iter().filter(|&&r| r <= 1).count() as f32 / n,
         hits_at_3: ranks.iter().filter(|&&r| r <= 3).count() as f32 / n,
         hits_at_10: ranks.iter().filter(|&&r| r <= 10).count() as f32 / n,
