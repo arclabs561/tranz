@@ -40,9 +40,16 @@ pub struct TrainConfig {
     pub model_type: ModelType,
     /// Embedding dimension (complex dim for RotatE/ComplEx).
     pub dim: usize,
-    /// Number of negative samples per positive.
+    /// Number of negative samples per positive (ignored in 1-N mode).
     pub num_negatives: usize,
-    /// Margin gamma for the loss function.
+    /// Use 1-N scoring: score all entities per (h,r) query with BCE loss.
+    /// Much faster convergence (5-10x fewer epochs) than negative sampling.
+    /// Requires more memory per batch: `batch_size * num_entities * 4` bytes.
+    pub one_to_n: bool,
+    /// Label smoothing epsilon for 1-N mode. 0 = no smoothing.
+    /// Recommended: 0.1. Replaces hard 0/1 targets with (eps, 1-eps).
+    pub label_smoothing: f32,
+    /// Margin gamma for the loss function (used in negative sampling mode).
     pub gamma: f32,
     /// Norm for distance-based models (TransE, RotatE). 1 = L1, 2 = L2.
     /// The RotatE reference implementation uses L1 for TransE.
@@ -82,6 +89,8 @@ impl Default for TrainConfig {
             model_type: ModelType::TransE,
             dim: 200,
             num_negatives: 256,
+            one_to_n: false,
+            label_smoothing: 0.0,
             gamma: 12.0,
             distance_norm: 1,
             subsampling: false,
@@ -250,6 +259,81 @@ impl TrainableModel {
             ModelType::DistMult => {
                 let score = ((&h * &r)? * &t)?;
                 score.sum(D::Minus1)?.neg()
+            }
+        }
+    }
+
+    /// Score all entities as tails for a batch of (h, r) queries.
+    ///
+    /// Returns tensor of shape `[batch, num_entities]`.
+    /// For dot-product models (DistMult, ComplEx), uses matmul.
+    /// For distance models (TransE), uses the squared-distance-via-GEMM trick.
+    pub fn score_1n(&self, heads: &Tensor, relations: &Tensor) -> Result<Tensor> {
+        let h = self.entity_embeddings.as_tensor().index_select(heads, 0)?;
+        let r = self
+            .relation_embeddings
+            .as_tensor()
+            .index_select(relations, 0)?;
+        let ent_matrix = self.entity_embeddings.as_tensor(); // [E, dim]
+
+        match self.model_type {
+            ModelType::TransE => {
+                // -||h+r-t||^2 = -(||h+r||^2 - 2*(h+r)@E^T + ||E||^2)
+                // We want lower = more likely, so return positive distance.
+                // But for BCE, we need higher = more likely. Return negative distance.
+                let hr = (h + r)?; // [B, dim]
+                let hr_sq = hr.sqr()?.sum(D::Minus1)?; // [B]
+                let ent_sq = ent_matrix.sqr()?.sum(D::Minus1)?; // [E]
+                let cross = hr.matmul(&ent_matrix.t()?)?; // [B, E]
+                                                          // dist^2 = hr_sq - 2*cross + ent_sq
+                let dist_sq = (hr_sq
+                    .unsqueeze(D::Minus1)?
+                    .broadcast_add(&ent_sq.unsqueeze(0)?)?
+                    - (cross * 2.0)?)?;
+                // Return negative distance (higher = more likely for BCE)
+                dist_sq.neg()
+            }
+            ModelType::DistMult => {
+                // score = sum(h * r * t) = (h*r) @ E^T
+                let hr = (h * r)?; // [B, dim]
+                hr.matmul(&ent_matrix.t()?) // [B, E], higher = more likely
+            }
+            ModelType::ComplEx => {
+                let dim = self.dim;
+                let h_re = h.i((.., ..dim))?;
+                let h_im = h.i((.., dim..))?;
+                let r_re = r.i((.., ..dim))?;
+                let r_im = r.i((.., dim..))?;
+                let hr_re = ((&h_re * &r_re)? - (&h_im * &r_im)?)?;
+                let hr_im = ((&h_re * &r_im)? + (&h_im * &r_re)?)?;
+                let e_re = ent_matrix.i((.., ..dim))?;
+                let e_im = ent_matrix.i((.., dim..))?;
+                // Re(hr * conj(e)) = hr_re @ e_re^T + hr_im @ e_im^T
+                let score = (hr_re.matmul(&e_re.t()?)? + hr_im.matmul(&e_im.t()?)?)?;
+                Ok(score) // higher = more likely
+            }
+            ModelType::RotatE => {
+                // RotatE isn't a dot product, so 1-N via GEMM isn't straightforward.
+                // Fall back to per-entity scoring.
+                // TODO: implement distance-via-GEMM for complex rotation
+                let dim = self.dim;
+                let h_re = h.i((.., ..dim))?;
+                let h_im = h.i((.., dim..))?;
+                let r_cos = r.cos()?;
+                let r_sin = r.sin()?;
+                let hr_re = ((&h_re * &r_cos)? - (&h_im * &r_sin)?)?;
+                let hr_im = ((&h_re * &r_sin)? + (&h_im * &r_cos)?)?;
+                // Concatenate [hr_re, hr_im] -> [B, 2*dim]
+                let hr = Tensor::cat(&[&hr_re, &hr_im], D::Minus1)?;
+                // Same GEMM trick as TransE but on concatenated complex vectors
+                let hr_sq = hr.sqr()?.sum(D::Minus1)?;
+                let ent_sq = ent_matrix.sqr()?.sum(D::Minus1)?;
+                let cross = hr.matmul(&ent_matrix.t()?)?;
+                let dist_sq = (hr_sq
+                    .unsqueeze(D::Minus1)?
+                    .broadcast_add(&ent_sq.unsqueeze(0)?)?
+                    - (cross * 2.0)?)?;
+                dist_sq.neg()
             }
         }
     }
@@ -437,78 +521,92 @@ pub fn train_with_validation(
 
             let heads = Tensor::from_vec(heads_data, actual_bs, &model.device)?;
             let rels = Tensor::from_vec(rels_data, actual_bs, &model.device)?;
-            let tails = Tensor::from_vec(tails_data, actual_bs, &model.device)?;
+            let tails = Tensor::from_vec(tails_data.clone(), actual_bs, &model.device)?;
 
-            // Score positives: [batch]
-            let pos_scores = model.score_batch(&heads, &rels, &tails)?;
+            let mut loss = if config.one_to_n {
+                // 1-N scoring: score all entities as tails, BCE loss.
+                let scores = model.score_1n(&heads, &rels)?; // [B, E]
 
-            // Generate random entities for corruption: [batch, k]
-            let neg_entities = Tensor::rand(
-                0.0_f32,
-                num_entities as f32,
-                (actual_bs, config.num_negatives),
-                &model.device,
-            )?
-            .to_dtype(DType::U32)?;
+                // Build target: 1-eps for correct tail, eps/E for others.
+                let eps = config.label_smoothing as f64;
+                let mut target_data =
+                    vec![eps as f32 / num_entities as f32; actual_bs * num_entities];
+                for (i, &(_, _, t)) in batch.iter().enumerate() {
+                    target_data[i * num_entities + t] = 1.0 - eps as f32;
+                }
+                let targets =
+                    Tensor::from_vec(target_data, (actual_bs, num_entities), &model.device)?;
 
-            // Corrupt head or tail with 50/50 probability per sample.
-            // corrupt_head: [batch, k] mask where 1 = corrupt head, 0 = corrupt tail.
-            let corrupt_mask = Tensor::rand(
-                0.0_f32,
-                1.0_f32,
-                (actual_bs, config.num_negatives),
-                &model.device,
-            )?;
-            let half = Tensor::full(0.5_f32, (actual_bs, config.num_negatives), &model.device)?;
-            let corrupt_head = corrupt_mask.lt(&half)?; // 1 where < 0.5
+                // BCE loss: -[y*log(sigmoid(s)) + (1-y)*log(sigmoid(-s))]
+                let log_sig = log_sigmoid(&scores)?;
+                let log_sig_neg = log_sigmoid(&scores.neg()?)?;
+                let bce = ((&targets * &log_sig)? + ((1.0 - &targets)? * &log_sig_neg)?)?;
+                bce.neg()?.mean_all()?
+            } else {
+                // Negative sampling with SANS.
+                let pos_scores = model.score_batch(&heads, &rels, &tails)?;
 
-            let heads_exp = heads
-                .unsqueeze(1)?
-                .expand((actual_bs, config.num_negatives))?;
-            let rels_exp = rels
-                .unsqueeze(1)?
-                .expand((actual_bs, config.num_negatives))?;
-            let tails_exp = tails
-                .unsqueeze(1)?
-                .expand((actual_bs, config.num_negatives))?;
-
-            // Where corrupt_head=1: use neg_entities as head, original tail.
-            // Where corrupt_head=0: use original head, neg_entities as tail.
-            let neg_heads = corrupt_head.where_cond(&neg_entities, &heads_exp)?;
-            let neg_tails = corrupt_head.where_cond(&tails_exp, &neg_entities)?;
-
-            let neg_scores = model
-                .score_batch(
-                    &neg_heads.flatten_all()?,
-                    &rels_exp.flatten_all()?,
-                    &neg_tails.flatten_all()?,
+                let neg_entities = Tensor::rand(
+                    0.0_f32,
+                    num_entities as f32,
+                    (actual_bs, config.num_negatives),
+                    &model.device,
                 )?
-                .reshape((actual_bs, config.num_negatives))?;
+                .to_dtype(DType::U32)?;
 
-            // SANS weighting (detached -- no gradient through weights).
-            let neg_weights = if alpha > 0.0 {
-                let scaled = (neg_scores.detach() * (-(alpha as f64)))?.detach();
-                candle_nn::ops::softmax(&scaled, D::Minus1)?
-            } else {
-                Tensor::ones((actual_bs, config.num_negatives), DType::F32, &model.device)?
-                    .affine(1.0 / config.num_negatives as f64, 0.0)?
-            };
+                let corrupt_mask = Tensor::rand(
+                    0.0_f32,
+                    1.0_f32,
+                    (actual_bs, config.num_negatives),
+                    &model.device,
+                )?;
+                let half = Tensor::full(0.5_f32, (actual_bs, config.num_negatives), &model.device)?;
+                let corrupt_head = corrupt_mask.lt(&half)?;
 
-            // Loss: -log(sigma(gamma - pos_score)) - sum_i w_i * log(sigma(neg_score_i - gamma))
-            let pos_loss = log_sigmoid(&(pos_scores.neg()? + gamma as f64)?)?.neg()?;
-            let neg_loss_per = log_sigmoid(&(neg_scores - gamma as f64)?)?;
-            let weighted_neg_loss = (&neg_weights * &neg_loss_per)?.sum(D::Minus1)?.neg()?;
+                let heads_exp = heads
+                    .unsqueeze(1)?
+                    .expand((actual_bs, config.num_negatives))?;
+                let rels_exp = rels
+                    .unsqueeze(1)?
+                    .expand((actual_bs, config.num_negatives))?;
+                let tails_exp = tails
+                    .unsqueeze(1)?
+                    .expand((actual_bs, config.num_negatives))?;
 
-            let per_triple_loss = (pos_loss + weighted_neg_loss)?;
-            let mut loss = if let Some(ref freq) = entity_freq {
-                let subsample_w: Vec<f32> = batch
-                    .iter()
-                    .map(|&(h, _, t)| 1.0 / ((freq[h] + freq[t]) as f32).sqrt())
-                    .collect();
-                let subsample_t = Tensor::from_vec(subsample_w, actual_bs, &model.device)?;
-                (&per_triple_loss * &subsample_t)?.mean_all()?
-            } else {
-                per_triple_loss.mean_all()?
+                let neg_heads = corrupt_head.where_cond(&neg_entities, &heads_exp)?;
+                let neg_tails = corrupt_head.where_cond(&tails_exp, &neg_entities)?;
+
+                let neg_scores = model
+                    .score_batch(
+                        &neg_heads.flatten_all()?,
+                        &rels_exp.flatten_all()?,
+                        &neg_tails.flatten_all()?,
+                    )?
+                    .reshape((actual_bs, config.num_negatives))?;
+
+                let neg_weights = if alpha > 0.0 {
+                    let scaled = (neg_scores.detach() * (-(alpha as f64)))?.detach();
+                    candle_nn::ops::softmax(&scaled, D::Minus1)?
+                } else {
+                    Tensor::ones((actual_bs, config.num_negatives), DType::F32, &model.device)?
+                        .affine(1.0 / config.num_negatives as f64, 0.0)?
+                };
+
+                let pos_loss = log_sigmoid(&(pos_scores.neg()? + gamma as f64)?)?.neg()?;
+                let neg_loss_per = log_sigmoid(&(neg_scores - gamma as f64)?)?;
+                let weighted_neg_loss = (&neg_weights * &neg_loss_per)?.sum(D::Minus1)?.neg()?;
+
+                let per_triple_loss = (pos_loss + weighted_neg_loss)?;
+                if let Some(ref freq) = entity_freq {
+                    let subsample_w: Vec<f32> = batch
+                        .iter()
+                        .map(|&(h, _, t)| 1.0 / ((freq[h] + freq[t]) as f32).sqrt())
+                        .collect();
+                    let subsample_t = Tensor::from_vec(subsample_w, actual_bs, &model.device)?;
+                    (&per_triple_loss * &subsample_t)?.mean_all()?
+                } else {
+                    per_triple_loss.mean_all()?
+                }
             };
 
             // N3 regularization.
@@ -763,5 +861,46 @@ mod tests {
             metrics.hits_at_1 > 0.0,
             "TransE should have nonzero Hits@1 on trivial graph"
         );
+    }
+
+    #[test]
+    fn one_to_n_distmult_smoke() {
+        let device = Device::Cpu;
+        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 1, 0), (0, 1, 2)];
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            dim: 8,
+            one_to_n: true,
+            label_smoothing: 0.1,
+            lr: 0.01,
+            batch_size: 4,
+            epochs: 10,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 3, 2, &config, &device).unwrap();
+        assert_eq!(result.losses.len(), 10);
+        assert!(result.losses.iter().all(|l| l.is_finite()));
+        // Loss should decrease with 1-N.
+        let first = result.losses[0];
+        let last = *result.losses.last().unwrap();
+        assert!(last < first, "1-N loss should decrease: {first} -> {last}");
+    }
+
+    #[test]
+    fn one_to_n_transe_smoke() {
+        let device = Device::Cpu;
+        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 0, 3)];
+        let config = TrainConfig {
+            model_type: ModelType::TransE,
+            dim: 8,
+            one_to_n: true,
+            label_smoothing: 0.1,
+            lr: 0.001,
+            batch_size: 3,
+            epochs: 10,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 4, 1, &config, &device).unwrap();
+        assert!(result.losses.iter().all(|l| l.is_finite()));
     }
 }
