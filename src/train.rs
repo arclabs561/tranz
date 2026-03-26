@@ -799,7 +799,7 @@ pub fn train_with_validation(
 
             let heads = Tensor::from_vec(heads_data, actual_bs, &model.device)?;
             let rels = Tensor::from_vec(rels_data, actual_bs, &model.device)?;
-            let tails = Tensor::from_vec(tails_data.clone(), actual_bs, &model.device)?;
+            let tails = Tensor::from_vec(tails_data, actual_bs, &model.device)?;
 
             let mut loss = if config.one_to_n {
                 let eps = config.label_smoothing as f64;
