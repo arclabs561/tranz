@@ -512,6 +512,7 @@ fn cmd_train(args: &[String]) {
         );
         let m = result.metrics;
         println!("MRR:      {:.4}", m.mrr);
+        println!("MR:       {:.1}", m.mean_rank);
         println!("Hits@1:   {:.4}", m.hits_at_1);
         println!("Hits@3:   {:.4}", m.hits_at_3);
         println!("Hits@10:  {:.4}", m.hits_at_10);

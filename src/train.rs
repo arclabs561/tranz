@@ -140,6 +140,11 @@ pub struct TrainConfig {
     /// Linear warmup epochs. LR ramps from 0 to `lr` over this many epochs.
     /// 0 = no warmup.
     pub warmup_epochs: usize,
+    /// Cosine annealing LR schedule. If > 0, divides training into this
+    /// many cycles with cosine decay from `lr` to `lr * 0.01` per cycle.
+    /// Snapshots are saved at each cycle trough for ensembling (SnapE).
+    /// 0 = no cosine annealing (use warmup + constant LR).
+    pub cosine_cycles: usize,
     /// Print loss to stderr every N epochs. 0 = silent.
     pub log_interval: usize,
     /// Evaluate on validation set every N epochs. 0 = no validation.
@@ -175,6 +180,7 @@ impl Default for TrainConfig {
             epochs: 1000,
             normalize_entities: false,
             warmup_epochs: 0,
+            cosine_cycles: 0,
             log_interval: 0,
             eval_interval: 0,
             patience: 5,
@@ -586,6 +592,16 @@ impl TrainableModel {
 }
 
 /// Training outcome.
+/// A snapshot of entity and relation embeddings (for ensembling).
+pub struct Snapshot {
+    /// Entity embeddings.
+    pub entity_vecs: Vec<Vec<f32>>,
+    /// Relation embeddings.
+    pub relation_vecs: Vec<Vec<f32>>,
+    /// Epoch at which this snapshot was taken.
+    pub epoch: usize,
+}
+
 pub struct TrainResult {
     /// The trained model.
     pub model: TrainableModel,
@@ -593,6 +609,8 @@ pub struct TrainResult {
     pub losses: Vec<f32>,
     /// Seconds per epoch.
     pub epoch_times: Vec<f32>,
+    /// Snapshots taken at cosine annealing cycle troughs (for SnapE ensembling).
+    pub snapshots: Vec<Snapshot>,
 }
 
 /// Validation data for early stopping.
@@ -713,6 +731,7 @@ pub fn train_with_validation(
 
     let mut losses = Vec::with_capacity(config.epochs);
     let mut epoch_times = Vec::with_capacity(config.epochs);
+    let mut snapshots = Vec::new();
     let mut shuffled: Vec<(usize, usize, usize)> = train_triples.to_vec();
     let mut best_mrr = f32::NEG_INFINITY;
     let mut patience_counter = 0_usize;
@@ -720,10 +739,22 @@ pub fn train_with_validation(
     let base_lr = config.lr;
 
     for _epoch in 0..config.epochs {
-        // Linear warmup.
+        // LR schedule: warmup, then constant or cosine annealing.
         if config.warmup_epochs > 0 && _epoch < config.warmup_epochs {
             let lr = base_lr * (_epoch + 1) as f64 / config.warmup_epochs as f64;
             optimizer.set_learning_rate(lr);
+        } else if config.cosine_cycles > 0 {
+            // Cosine annealing within each cycle (SnapE).
+            let effective_epoch = _epoch.saturating_sub(config.warmup_epochs);
+            let total_effective = config.epochs.saturating_sub(config.warmup_epochs);
+            let epochs_per_cycle = total_effective / config.cosine_cycles;
+            if epochs_per_cycle > 0 {
+                let cycle_pos = effective_epoch % epochs_per_cycle;
+                let t = cycle_pos as f64 / epochs_per_cycle as f64;
+                let lr = base_lr * 0.01
+                    + 0.5 * base_lr * 0.99 * (1.0 + (t * std::f64::consts::PI).cos());
+                optimizer.set_learning_rate(lr);
+            }
         } else if config.warmup_epochs > 0 && _epoch == config.warmup_epochs {
             optimizer.set_learning_rate(base_lr);
         }
@@ -932,6 +963,30 @@ pub fn train_with_validation(
         losses.push(avg_loss);
         epoch_times.push(epoch_start.elapsed().as_secs_f32());
 
+        // Snapshot at cosine annealing cycle troughs.
+        if config.cosine_cycles > 0 {
+            let effective_epoch = _epoch.saturating_sub(config.warmup_epochs);
+            let total_effective = config.epochs.saturating_sub(config.warmup_epochs);
+            let epochs_per_cycle = total_effective / config.cosine_cycles;
+            if epochs_per_cycle > 0
+                && effective_epoch > 0
+                && (effective_epoch + 1) % epochs_per_cycle == 0
+            {
+                if let (Ok(ev), Ok(rv)) = (model.entity_vecs(), model.relation_vecs()) {
+                    eprintln!(
+                        "Snapshot {} saved at epoch {}",
+                        snapshots.len() + 1,
+                        _epoch + 1
+                    );
+                    snapshots.push(Snapshot {
+                        entity_vecs: ev,
+                        relation_vecs: rv,
+                        epoch: _epoch + 1,
+                    });
+                }
+            }
+        }
+
         if config.log_interval > 0 && (_epoch + 1) % config.log_interval == 0 {
             let epoch_secs = epoch_start.elapsed().as_secs_f32();
             let ent_norm = model
@@ -1001,6 +1056,7 @@ pub fn train_with_validation(
         model,
         losses,
         epoch_times,
+        snapshots,
     })
 }
 
