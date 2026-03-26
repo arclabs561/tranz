@@ -256,6 +256,7 @@ fn cmd_train(args: &[String]) {
     let mut output_dir = PathBuf::from("output");
     let mut checkpoint_interval = 0_usize;
     let mut do_eval = false;
+    let mut use_gpu = false;
     let mut one_to_n = false;
     let mut label_smoothing = 0.0_f32;
 
@@ -362,6 +363,9 @@ fn cmd_train(args: &[String]) {
             "--eval" => {
                 do_eval = true;
             }
+            "--gpu" => {
+                use_gpu = true;
+            }
             "--checkpoint" => {
                 i += 1;
                 checkpoint_interval = args[i].parse().unwrap();
@@ -446,7 +450,14 @@ fn cmd_train(args: &[String]) {
     };
 
     eprintln!("Training {model_type:?} dim={dim} gamma={gamma} lr={lr} epochs={epochs}");
-    let device = candle_core::Device::Cpu;
+    let device = if use_gpu {
+        candle_core::Device::new_cuda(0).unwrap_or_else(|e| {
+            eprintln!("CUDA not available: {e}, falling back to CPU");
+            candle_core::Device::Cpu
+        })
+    } else {
+        candle_core::Device::Cpu
+    };
     let start = Instant::now();
 
     let result = train::train(
