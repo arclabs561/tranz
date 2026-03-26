@@ -542,24 +542,32 @@ pub fn train_with_validation(
             let tails = Tensor::from_vec(tails_data.clone(), actual_bs, &model.device)?;
 
             let mut loss = if config.one_to_n {
-                // 1-N scoring: score all entities as tails, BCE loss.
+                // 1-N scoring: score all entities as tails.
                 let scores = model.score_1n(&heads, &rels)?; // [B, E]
 
-                // Build target: 1-eps for correct tail, eps/E for others.
+                // Softmax cross-entropy with label smoothing.
+                // log_softmax gives log-probabilities, then NLL against target.
                 let eps = config.label_smoothing as f64;
-                let mut target_data =
-                    vec![eps as f32 / num_entities as f32; actual_bs * num_entities];
-                for (i, &(_, _, t)) in batch.iter().enumerate() {
-                    target_data[i * num_entities + t] = 1.0 - eps as f32;
-                }
-                let targets =
-                    Tensor::from_vec(target_data, (actual_bs, num_entities), &model.device)?;
+                let log_probs = candle_nn::ops::log_softmax(&scores, D::Minus1)?;
 
-                // BCE loss: -[y*log(sigmoid(s)) + (1-y)*log(sigmoid(-s))]
-                let log_sig = log_sigmoid(&scores)?;
-                let log_sig_neg = log_sigmoid(&scores.neg()?)?;
-                let bce = ((&targets * &log_sig)? + ((1.0 - &targets)? * &log_sig_neg)?)?;
-                bce.neg()?.mean_all()?
+                // For each sample, the target is the correct tail entity index.
+                // With label smoothing: loss = (1-eps)*NLL + eps*uniform_entropy
+                let tail_ids = Tensor::from_vec(
+                    batch.iter().map(|&(_, _, t)| t as u32).collect::<Vec<_>>(),
+                    actual_bs,
+                    &model.device,
+                )?;
+                // Gather log-prob of the correct entity.
+                let correct_log_prob = log_probs.gather(&tail_ids.unsqueeze(1)?, 1)?.squeeze(1)?;
+                let nll = correct_log_prob.neg()?.mean_all()?;
+
+                if eps > 0.0 {
+                    // Smoothed loss: (1-eps)*NLL - eps*mean(log_probs)
+                    let uniform = log_probs.mean_all()?.neg()?;
+                    ((nll * (1.0 - eps))? + (uniform * eps)?)?
+                } else {
+                    nll
+                }
             } else {
                 // Negative sampling with SANS.
                 let pos_scores = model.score_batch(&heads, &rels, &tails)?;
