@@ -153,13 +153,16 @@ fn compute_metrics(ranks: &[u32]) -> Metrics {
     if ranks.is_empty() {
         return Metrics::default();
     }
-    let usize_ranks: Vec<usize> = ranks.iter().map(|&r| r as usize).collect();
+    let n = ranks.len() as f64;
+    let mrr = ranks.iter().map(|&r| 1.0 / r as f64).sum::<f64>() / n;
+    let mean_rank = ranks.iter().map(|&r| r as f64).sum::<f64>() / n;
+    let hits = |k: u32| ranks.iter().filter(|&&r| r <= k).count() as f64 / n;
     Metrics {
-        mrr: lattix::metrics::mean_reciprocal_rank(&usize_ranks) as f32,
-        mean_rank: lattix::metrics::mean_rank(&usize_ranks) as f32,
-        hits_at_1: lattix::metrics::hits_at_k(&usize_ranks, 1) as f32,
-        hits_at_3: lattix::metrics::hits_at_k(&usize_ranks, 3) as f32,
-        hits_at_10: lattix::metrics::hits_at_k(&usize_ranks, 10) as f32,
+        mrr: mrr as f32,
+        mean_rank: mean_rank as f32,
+        hits_at_1: hits(1) as f32,
+        hits_at_3: hits(3) as f32,
+        hits_at_10: hits(10) as f32,
     }
 }
 
