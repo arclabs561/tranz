@@ -19,6 +19,7 @@ features = ["candle"]
 candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }
 rand = { version = "0.9", optional = true }
+lattix = "0.5.4"
 rayon = "1"
 thiserror = "2"
 
