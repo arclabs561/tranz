@@ -15,10 +15,10 @@ Dual-licensed under MIT or Apache-2.0.
 
 | Model | Scoring function | Space | Reference |
 |---|---|---|---|
-| TransE | `\|\|h + r - t\|\|` | Real | Bordes et al., 2013 |
-| RotatE | `\|\|h * r - t\|\|` | Complex | Sun et al., 2019 |
-| ComplEx | `Re(h * r * conj(t))` | Complex | Trouillon et al., 2016 |
-| DistMult | `h * r * t` | Real | Yang et al., 2015 |
+| TransE | $\lVert \mathbf{h} + \mathbf{r} - \mathbf{t} \rVert$ | Real | Bordes et al., 2013 |
+| RotatE | $\lVert \mathbf{h} \circ \mathbf{r} - \mathbf{t} \rVert$ | Complex | Sun et al., 2019 |
+| ComplEx | $\operatorname{Re}(\langle \mathbf{h}, \mathbf{r}, \bar{\mathbf{t}} \rangle)$ | Complex | Trouillon et al., 2016 |
+| DistMult | $\langle \mathbf{h}, \mathbf{r}, \mathbf{t} \rangle$ | Real | Yang et al., 2015 |
 
 ## Quick start
 
