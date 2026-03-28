@@ -12,10 +12,10 @@
 //!
 //! ## Tie-breaking
 //!
-//! This implementation uses **pessimistic** tie-breaking: an entity with the
-//! same score as the target does *not* increase the rank. Only entities with
-//! strictly better (lower) scores count. This is equivalent to "best-case
-//! rank among tied entities."
+//! This implementation uses **optimistic** tie-breaking: only entities with
+//! strictly better (lower) scores than the target increase the rank. Entities
+//! with the same score as the target do not count. This gives the best-case
+//! rank among tied entities.
 //!
 //! ## Parallelism
 //!
@@ -93,35 +93,39 @@ pub fn evaluate_link_prediction_detailed(
     let known: HashSet<(usize, usize, usize)> = all_triples.iter().copied().collect();
 
     // Parallel: each test triple produces two (relation, rank) pairs.
+    // Uses batch scoring (score_all_tails / score_all_heads) for ~N-fold speedup
+    // over per-entity score() calls, where N = num_entities.
     let rel_ranks: Vec<(usize, u32)> = test_triples
         .par_iter()
         .flat_map_iter(|&(h, r, t)| {
-            let target_score = model.score(h, r, t);
-
-            // Tail prediction.
+            // Tail prediction: score all entities as tail replacements.
+            let tail_scores = model.score_all_tails(h, r);
+            let target_tail_score = tail_scores[t];
             let mut tail_rank = 1u32;
-            for t_prime in 0..model.num_entities() {
+            for (t_prime, &score) in tail_scores.iter().enumerate() {
                 if t_prime == t {
                     continue;
                 }
                 if known.contains(&(h, r, t_prime)) {
                     continue;
                 }
-                if model.score(h, r, t_prime) < target_score {
+                if score < target_tail_score {
                     tail_rank += 1;
                 }
             }
 
-            // Head prediction.
+            // Head prediction: score all entities as head replacements.
+            let head_scores = model.score_all_heads(r, t);
+            let target_head_score = head_scores[h];
             let mut head_rank = 1u32;
-            for h_prime in 0..model.num_entities() {
+            for (h_prime, &score) in head_scores.iter().enumerate() {
                 if h_prime == h {
                     continue;
                 }
                 if known.contains(&(h_prime, r, t)) {
                     continue;
                 }
-                if model.score(h_prime, r, t) < target_score {
+                if score < target_head_score {
                     head_rank += 1;
                 }
             }
@@ -224,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn tie_breaking_is_pessimistic() {
+    fn tie_breaking_is_optimistic() {
         struct TiedModel;
         impl Scorer for TiedModel {
             fn score(&self, _h: usize, _r: usize, _t: usize) -> f32 {
@@ -240,7 +244,7 @@ mod tests {
         let metrics = evaluate_link_prediction(&TiedModel, &test, &all, 3);
         assert!(
             (metrics.hits_at_1 - 1.0).abs() < 1e-6,
-            "Pessimistic tie-breaking: rank should be 1 when all scores tie"
+            "Optimistic tie-breaking: rank should be 1 when all scores tie"
         );
     }
 

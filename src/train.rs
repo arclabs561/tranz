@@ -68,11 +68,6 @@ impl Adagrad {
     fn set_learning_rate(&mut self, lr: f64) {
         self.lr = lr;
     }
-
-    #[allow(dead_code)]
-    fn learning_rate(&self) -> f64 {
-        self.lr
-    }
 }
 
 /// Which model architecture to train.
