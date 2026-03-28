@@ -1118,6 +1118,7 @@ fn tensor_to_vecs(t: &Tensor) -> Result<Vec<Vec<f32>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Scorer;
 
     #[test]
     fn log_sigmoid_basic() {
@@ -1152,7 +1153,7 @@ mod tests {
         assert_eq!(result.losses.len(), 5);
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let model = result.model.to_transe().unwrap();
-        assert_eq!(model.entities().len(), 3);
+        assert_eq!(model.num_entities(), 3);
     }
 
     #[test]
@@ -1174,7 +1175,7 @@ mod tests {
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let model = result.model.to_rotate().unwrap();
-        assert_eq!(model.entities().len(), 3);
+        assert_eq!(model.num_entities(), 3);
     }
 
     #[test]
@@ -1196,7 +1197,7 @@ mod tests {
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let model = result.model.to_complex().unwrap();
-        assert_eq!(model.entities().len(), 3);
+        assert_eq!(model.num_entities(), 3);
     }
 
     #[test]
@@ -1218,7 +1219,7 @@ mod tests {
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let model = result.model.to_distmult().unwrap();
-        assert_eq!(model.entities().len(), 3);
+        assert_eq!(model.num_entities(), 3);
     }
 
     #[test]

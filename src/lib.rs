@@ -142,8 +142,10 @@ pub trait Scorer {
 /// Reference: Bordes et al. (2013), "Translating Embeddings for Modeling
 /// Multi-relational Data."
 pub struct TransE {
-    entities: Vec<Vec<f32>>,
-    relations: Vec<Vec<f32>>,
+    /// Flat entity embeddings: `[num_entities * dim]` row-major.
+    entities: Vec<f32>,
+    /// Flat relation embeddings: `[num_relations * dim]` row-major.
+    relations: Vec<f32>,
     dim: usize,
     /// Distance norm: 1 = L1, 2 = L2 (default).
     norm: u32,
@@ -167,6 +169,8 @@ impl TransE {
 
     /// Create from pre-built embedding vectors.
     ///
+    /// Flattens the input into contiguous row-major storage.
+    ///
     /// # Panics
     ///
     /// Panics if any inner vector length differs from `dim`.
@@ -174,8 +178,8 @@ impl TransE {
         assert_dims(&entities, dim, "entity");
         assert_dims(&relations, dim, "relation");
         Self {
-            entities,
-            relations,
+            entities: flatten(&entities),
+            relations: flatten(&relations),
             dim,
             norm: 2,
         }
@@ -191,21 +195,31 @@ impl TransE {
         assert_dims(&entities, dim, "entity");
         assert_dims(&relations, dim, "relation");
         Self {
-            entities,
-            relations,
+            entities: flatten(&entities),
+            relations: flatten(&relations),
             dim,
             norm,
         }
     }
 
-    /// Entity embeddings: `[num_entities][dim]`.
-    pub fn entities(&self) -> &[Vec<f32>] {
+    /// Flat entity embeddings (row-major, stride = `dim()`).
+    pub fn entities_flat(&self) -> &[f32] {
         &self.entities
     }
 
-    /// Relation embeddings: `[num_relations][dim]`.
-    pub fn relations(&self) -> &[Vec<f32>] {
+    /// Flat relation embeddings (row-major, stride = `dim()`).
+    pub fn relations_flat(&self) -> &[f32] {
         &self.relations
+    }
+
+    /// Reconstruct entity embeddings as `Vec<Vec<f32>>`.
+    pub fn entity_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.entities, self.dim)
+    }
+
+    /// Reconstruct relation embeddings as `Vec<Vec<f32>>`.
+    pub fn relation_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.relations, self.dim)
     }
 
     /// Embedding dimension.
@@ -220,9 +234,9 @@ impl TransE {
 
     /// Score a triple (h, r, t) via distance `||h + r - t||`.
     pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
-        let h = &self.entities[head];
-        let r = &self.relations[relation];
-        let t = &self.entities[tail];
+        let h = row(&self.entities, head, self.dim);
+        let r = row(&self.relations, relation, self.dim);
+        let t = row(&self.entities, tail, self.dim);
 
         match self.norm {
             1 => {
@@ -250,21 +264,22 @@ impl Scorer for TransE {
     }
 
     fn num_entities(&self) -> usize {
-        self.entities.len()
+        self.entities.len() / self.dim
     }
 
     fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
-        let h = &self.entities[head];
-        let r = &self.relations[relation];
+        let h = row(&self.entities, head, self.dim);
+        let r = row(&self.relations, relation, self.dim);
         let dim = self.dim;
         let norm = self.norm;
+        let n = self.num_entities();
         let mut hr = vec![0.0_f64; dim];
         for i in 0..dim {
             hr[i] = h[i] as f64 + r[i] as f64;
         }
-        self.entities
-            .iter()
-            .map(|t| {
+        (0..n)
+            .map(|ti| {
+                let t = row(&self.entities, ti, dim);
                 if norm == 1 {
                     let mut dist = 0.0_f64;
                     for i in 0..dim {
@@ -284,17 +299,18 @@ impl Scorer for TransE {
     }
 
     fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
-        let r = &self.relations[relation];
-        let t = &self.entities[tail];
+        let r = row(&self.relations, relation, self.dim);
+        let t = row(&self.entities, tail, self.dim);
         let dim = self.dim;
         let norm = self.norm;
+        let n = self.num_entities();
         let mut neg_rt = vec![0.0_f64; dim];
         for i in 0..dim {
             neg_rt[i] = r[i] as f64 - t[i] as f64;
         }
-        self.entities
-            .iter()
-            .map(|h| {
+        (0..n)
+            .map(|hi| {
+                let h = row(&self.entities, hi, dim);
                 if norm == 1 {
                     let mut dist = 0.0_f64;
                     for i in 0..dim {
@@ -332,10 +348,10 @@ impl Scorer for TransE {
 /// Reference: Sun et al. (2019), "RotatE: Knowledge Graph Embedding by
 /// Relational Rotation in Complex Space."
 pub struct RotatE {
-    /// Entity embeddings: `[re_0..re_{dim-1}, im_0..im_{dim-1}]`, length = dim * 2.
-    entities: Vec<Vec<f32>>,
-    /// Relation angles, length = dim. The complex rotation is `(cos(angle), sin(angle))`.
-    relation_angles: Vec<Vec<f32>>,
+    /// Flat entity embeddings: `[num_entities * dim * 2]` row-major, re then im per entity.
+    entities: Vec<f32>,
+    /// Flat relation angles: `[num_relations * dim]` row-major.
+    relation_angles: Vec<f32>,
     /// Complex dimension (half the real storage per entity).
     dim: usize,
     /// Margin parameter used for initialization scaling.
@@ -362,8 +378,8 @@ impl RotatE {
             })
             .collect();
         Self {
-            entities,
-            relation_angles,
+            entities: flatten(&entities),
+            relation_angles: flatten(&relation_angles),
             dim,
             gamma,
         }
@@ -386,21 +402,31 @@ impl RotatE {
         assert_dims(&entities, dim * 2, "entity (re+im)");
         assert_dims(&relation_angles, dim, "relation angle");
         Self {
-            entities,
-            relation_angles,
+            entities: flatten(&entities),
+            relation_angles: flatten(&relation_angles),
             dim,
             gamma,
         }
     }
 
-    /// Entity embeddings: `[re..., im...]` contiguous layout.
-    pub fn entities(&self) -> &[Vec<f32>] {
+    /// Flat entity embeddings (row-major, stride = `dim() * 2`).
+    pub fn entities_flat(&self) -> &[f32] {
         &self.entities
     }
 
-    /// Relation angles.
-    pub fn relation_angles(&self) -> &[Vec<f32>] {
+    /// Flat relation angle embeddings (row-major, stride = `dim()`).
+    pub fn relation_angles_flat(&self) -> &[f32] {
         &self.relation_angles
+    }
+
+    /// Reconstruct entity embeddings as `Vec<Vec<f32>>`.
+    pub fn entity_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.entities, self.dim * 2)
+    }
+
+    /// Reconstruct relation angle embeddings as `Vec<Vec<f32>>`.
+    pub fn relation_angle_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.relation_angles, self.dim)
     }
 
     /// Complex dimension.
@@ -417,9 +443,9 @@ impl RotatE {
     ///
     /// Entity layout: first `dim` floats are real parts, next `dim` are imaginary.
     pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
-        let h = &self.entities[head];
-        let r = &self.relation_angles[relation];
-        let t = &self.entities[tail];
+        let h = row(&self.entities, head, self.dim * 2);
+        let r = row(&self.relation_angles, relation, self.dim);
+        let t = row(&self.entities, tail, self.dim * 2);
         let dim = self.dim;
 
         let mut dist_sq = 0.0_f64;
@@ -447,13 +473,14 @@ impl Scorer for RotatE {
     }
 
     fn num_entities(&self) -> usize {
-        self.entities.len()
+        self.entities.len() / (self.dim * 2)
     }
 
     fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
-        let h = &self.entities[head];
-        let r = &self.relation_angles[relation];
+        let h = row(&self.entities, head, self.dim * 2);
+        let r = row(&self.relation_angles, relation, self.dim);
         let dim = self.dim;
+        let n = self.num_entities();
         // Precompute h * r (complex rotation) once.
         let mut hr_re = vec![0.0_f64; dim];
         let mut hr_im = vec![0.0_f64; dim];
@@ -464,9 +491,9 @@ impl Scorer for RotatE {
             hr_re[i] = h_re * r_cos - h_im * r_sin;
             hr_im[i] = h_re * r_sin + h_im * r_cos;
         }
-        self.entities
-            .iter()
-            .map(|t| {
+        (0..n)
+            .map(|ti| {
+                let t = row(&self.entities, ti, dim * 2);
                 let mut dist_sq = 0.0_f64;
                 for i in 0..dim {
                     let d_re = hr_re[i] - t[i] as f64;
@@ -497,10 +524,10 @@ impl Scorer for RotatE {
 /// Reference: Trouillon et al. (2016), "Complex Embeddings for Simple Link
 /// Prediction."
 pub struct ComplEx {
-    /// Entity embeddings: `[re_0..re_{dim-1}, im_0..im_{dim-1}]`, length = dim * 2.
-    entities: Vec<Vec<f32>>,
-    /// Relation embeddings: `[re..., im...]`, length = dim * 2.
-    relations: Vec<Vec<f32>>,
+    /// Flat entity embeddings: `[num_entities * dim * 2]` row-major.
+    entities: Vec<f32>,
+    /// Flat relation embeddings: `[num_relations * dim * 2]` row-major.
+    relations: Vec<f32>,
     /// Complex dimension.
     dim: usize,
 }
@@ -532,20 +559,30 @@ impl ComplEx {
         assert_dims(&entities, dim * 2, "entity (re+im)");
         assert_dims(&relations, dim * 2, "relation (re+im)");
         Self {
-            entities,
-            relations,
+            entities: flatten(&entities),
+            relations: flatten(&relations),
             dim,
         }
     }
 
-    /// Entity embeddings: `[re..., im...]` contiguous layout.
-    pub fn entities(&self) -> &[Vec<f32>] {
+    /// Flat entity embeddings (row-major, stride = `dim() * 2`).
+    pub fn entities_flat(&self) -> &[f32] {
         &self.entities
     }
 
-    /// Relation embeddings: `[re..., im...]` contiguous layout.
-    pub fn relations(&self) -> &[Vec<f32>] {
+    /// Flat relation embeddings (row-major, stride = `dim() * 2`).
+    pub fn relations_flat(&self) -> &[f32] {
         &self.relations
+    }
+
+    /// Reconstruct entity embeddings as `Vec<Vec<f32>>`.
+    pub fn entity_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.entities, self.dim * 2)
+    }
+
+    /// Reconstruct relation embeddings as `Vec<Vec<f32>>`.
+    pub fn relation_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.relations, self.dim * 2)
     }
 
     /// Complex dimension.
@@ -560,9 +597,9 @@ impl ComplEx {
     ///
     /// Entity/relation layout: first `dim` floats are real, next `dim` are imaginary.
     pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
-        let h = &self.entities[head];
-        let r = &self.relations[relation];
-        let t = &self.entities[tail];
+        let h = row(&self.entities, head, self.dim * 2);
+        let r = row(&self.relations, relation, self.dim * 2);
+        let t = row(&self.entities, tail, self.dim * 2);
         let dim = self.dim;
 
         let mut dot = 0.0_f64;
@@ -590,13 +627,14 @@ impl Scorer for ComplEx {
     }
 
     fn num_entities(&self) -> usize {
-        self.entities.len()
+        self.entities.len() / (self.dim * 2)
     }
 
     fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
-        let h = &self.entities[head];
-        let r = &self.relations[relation];
+        let h = row(&self.entities, head, self.dim * 2);
+        let r = row(&self.relations, relation, self.dim * 2);
         let dim = self.dim;
+        let n = self.num_entities();
         // Precompute h * r (complex) once.
         let mut hr_re = vec![0.0_f64; dim];
         let mut hr_im = vec![0.0_f64; dim];
@@ -608,9 +646,9 @@ impl Scorer for ComplEx {
             hr_re[i] = h_re * r_re - h_im * r_im;
             hr_im[i] = h_re * r_im + h_im * r_re;
         }
-        self.entities
-            .iter()
-            .map(|t| {
+        (0..n)
+            .map(|ti| {
+                let t = row(&self.entities, ti, dim * 2);
                 let mut dot = 0.0_f64;
                 for i in 0..dim {
                     // Re(hr * conj(t)) = hr_re * t_re + hr_im * t_im
@@ -638,8 +676,10 @@ impl Scorer for ComplEx {
 /// Reference: Yang et al. (2015), "Embedding Entities and Relations for
 /// Learning and Inference in Knowledge Bases."
 pub struct DistMult {
-    entities: Vec<Vec<f32>>,
-    relations: Vec<Vec<f32>>,
+    /// Flat entity embeddings: `[num_entities * dim]` row-major.
+    entities: Vec<f32>,
+    /// Flat relation embeddings: `[num_relations * dim]` row-major.
+    relations: Vec<f32>,
     dim: usize,
 }
 
@@ -665,20 +705,30 @@ impl DistMult {
         assert_dims(&entities, dim, "entity");
         assert_dims(&relations, dim, "relation");
         Self {
-            entities,
-            relations,
+            entities: flatten(&entities),
+            relations: flatten(&relations),
             dim,
         }
     }
 
-    /// Entity embeddings.
-    pub fn entities(&self) -> &[Vec<f32>] {
+    /// Flat entity embeddings (row-major, stride = `dim()`).
+    pub fn entities_flat(&self) -> &[f32] {
         &self.entities
     }
 
-    /// Relation embeddings.
-    pub fn relations(&self) -> &[Vec<f32>] {
+    /// Flat relation embeddings (row-major, stride = `dim()`).
+    pub fn relations_flat(&self) -> &[f32] {
         &self.relations
+    }
+
+    /// Reconstruct entity embeddings as `Vec<Vec<f32>>`.
+    pub fn entity_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.entities, self.dim)
+    }
+
+    /// Reconstruct relation embeddings as `Vec<Vec<f32>>`.
+    pub fn relation_vecs(&self) -> Vec<Vec<f32>> {
+        unflatten(&self.relations, self.dim)
     }
 
     /// Embedding dimension.
@@ -688,9 +738,9 @@ impl DistMult {
 
     /// Raw score: `sum_i h_i * r_i * t_i`. Higher = more likely.
     pub fn score_triple(&self, head: usize, relation: usize, tail: usize) -> f32 {
-        let h = &self.entities[head];
-        let r = &self.relations[relation];
-        let t = &self.entities[tail];
+        let h = row(&self.entities, head, self.dim);
+        let r = row(&self.relations, relation, self.dim);
+        let t = row(&self.entities, tail, self.dim);
 
         let mut dot = 0.0_f64;
         for i in 0..self.dim {
@@ -707,21 +757,22 @@ impl Scorer for DistMult {
     }
 
     fn num_entities(&self) -> usize {
-        self.entities.len()
+        self.entities.len() / self.dim
     }
 
     fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
-        let h = &self.entities[head];
-        let r = &self.relations[relation];
+        let h = row(&self.entities, head, self.dim);
+        let r = row(&self.relations, relation, self.dim);
         let dim = self.dim;
+        let n = self.num_entities();
         // Precompute h * r once.
         let mut hr = vec![0.0_f64; dim];
         for i in 0..dim {
             hr[i] = h[i] as f64 * r[i] as f64;
         }
-        self.entities
-            .iter()
-            .map(|t| {
+        (0..n)
+            .map(|ti| {
+                let t = row(&self.entities, ti, dim);
                 let mut dot = 0.0_f64;
                 for i in 0..dim {
                     dot += hr[i] * t[i] as f64;
@@ -735,6 +786,27 @@ impl Scorer for DistMult {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Return a row slice from a flat embedding buffer.
+#[inline]
+fn row(data: &[f32], i: usize, stride: usize) -> &[f32] {
+    &data[i * stride..(i + 1) * stride]
+}
+
+/// Flatten `Vec<Vec<f32>>` into contiguous row-major `Vec<f32>`.
+fn flatten(vecs: &[Vec<f32>]) -> Vec<f32> {
+    let total: usize = vecs.iter().map(|v| v.len()).sum();
+    let mut flat = Vec::with_capacity(total);
+    for v in vecs {
+        flat.extend_from_slice(v);
+    }
+    flat
+}
+
+/// Reconstruct `Vec<Vec<f32>>` from a flat buffer.
+fn unflatten(flat: &[f32], stride: usize) -> Vec<Vec<f32>> {
+    flat.chunks_exact(stride).map(|c| c.to_vec()).collect()
+}
 
 fn assert_dims(vecs: &[Vec<f32>], expected: usize, label: &str) {
     for (i, v) in vecs.iter().enumerate() {

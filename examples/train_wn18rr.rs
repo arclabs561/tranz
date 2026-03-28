@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use tranz::dataset::load_dataset;
+use tranz::dataset::{load_dataset, InternedDatasetExt};
 use tranz::eval::evaluate_link_prediction;
 use tranz::train::{self, ModelType, TrainConfig};
 use tranz::Scorer;
@@ -135,8 +135,9 @@ fn main() {
     let device = candle_core::Device::Cpu;
     let start = Instant::now();
 
+    let train_tuples: Vec<_> = interned.train.iter().map(|t| t.as_tuple()).collect();
     let result = train::train(
-        &interned.train,
+        &train_tuples,
         interned.num_entities(),
         interned.num_relations(),
         &config,
@@ -166,7 +167,8 @@ fn main() {
         "Evaluating on test set ({} triples)...",
         interned.test.len()
     );
-    let all_triples = interned.all_triples();
+    let test_tuples: Vec<_> = interned.test.iter().map(|t| t.as_tuple()).collect();
+    let all_tuples = interned.all_triples();
     let num_entities = interned.num_entities();
 
     let eval_start = Instant::now();
@@ -178,7 +180,7 @@ fn main() {
     };
 
     let metrics =
-        evaluate_link_prediction(scorer.as_ref(), &interned.test, &all_triples, num_entities);
+        evaluate_link_prediction(scorer.as_ref(), &test_tuples, &all_tuples, num_entities);
 
     eprintln!(
         "Evaluation complete in {:.1}s",
