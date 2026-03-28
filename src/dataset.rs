@@ -85,19 +85,25 @@ impl DatasetExt for Dataset {
 }
 
 fn parse_flexible(content: &str) -> Vec<Triple> {
-    content
-        .lines()
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .filter_map(|line| {
-            let sep = if line.contains('\t') { '\t' } else { ',' };
-            let parts: Vec<&str> = line.split(sep).map(str::trim).collect();
-            if parts.len() >= 3 {
-                Some(Triple::new(parts[0], parts[1], parts[2]))
-            } else {
-                None
-            }
-        })
-        .collect()
+    let mut triples = Vec::new();
+    let mut dropped = 0usize;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let sep = if trimmed.contains('\t') { '\t' } else { ',' };
+        let parts: Vec<&str> = trimmed.split(sep).map(str::trim).collect();
+        if parts.len() >= 3 {
+            triples.push(Triple::new(parts[0], parts[1], parts[2]));
+        } else {
+            dropped += 1;
+        }
+    }
+    if dropped > 0 {
+        eprintln!("warning: skipped {dropped} malformed lines (expected 3 fields per line)");
+    }
+    triples
 }
 
 #[cfg(test)]
