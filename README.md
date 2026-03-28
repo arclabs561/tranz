@@ -1,8 +1,6 @@
 # tranz
 
-Point-embedding knowledge graph completion: TransE, RotatE, ComplEx, DistMult.
-
-Train on any triple file, export embeddings, predict missing links. 1-N scoring with BCE loss for fast convergence.
+Knowledge graph embedding models.
 
 ```toml
 [dependencies]
