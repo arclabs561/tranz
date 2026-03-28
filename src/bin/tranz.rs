@@ -247,7 +247,7 @@ fn cmd_train(_args: &[str]) {
 
 #[cfg(feature = "candle")]
 fn cmd_train(args: &[String]) {
-    use tranz::dataset;
+    use tranz::dataset::{self, DatasetExt, InternedDatasetExt};
     use tranz::io::export_embeddings;
     use tranz::train::{self, ModelType, TrainConfig};
     use tranz::Scorer;
@@ -418,7 +418,7 @@ fn cmd_train(args: &[String]) {
         })
     } else if let Some(file) = &triples_file {
         eprintln!("Loading triples from {}", file.display());
-        let ds = dataset::load_triples(file).unwrap_or_else(|e| {
+        let ds = dataset::Dataset::load_flexible(file).unwrap_or_else(|e| {
             eprintln!("Failed: {e}");
             std::process::exit(1);
         });
@@ -485,8 +485,9 @@ fn cmd_train(args: &[String]) {
     };
     let start = Instant::now();
 
+    let train_tuples: Vec<_> = interned.train.iter().map(|t| t.as_tuple()).collect();
     let result = train::train(
-        &interned.train,
+        &train_tuples,
         interned.num_entities(),
         interned.num_relations(),
         &config,
@@ -504,11 +505,17 @@ fn cmd_train(args: &[String]) {
     let entity_vecs = result.model.entity_vecs().unwrap();
     let relation_vecs = result.model.relation_vecs().unwrap();
     eprintln!("Exporting embeddings to {}", output_dir.display());
+    let ent_names: Vec<String> = (0..interned.num_entities())
+        .map(|i| interned.entities.get(i).unwrap().to_string())
+        .collect();
+    let rel_names: Vec<String> = (0..interned.num_relations())
+        .map(|i| interned.relations.get(i).unwrap().to_string())
+        .collect();
     export_embeddings(
         &output_dir,
-        &interned.id_to_entity,
+        &ent_names,
         &entity_vecs,
-        &interned.id_to_relation,
+        &rel_names,
         &relation_vecs,
     )
     .unwrap();
@@ -522,7 +529,8 @@ fn cmd_train(args: &[String]) {
             "Evaluating on test set ({} triples)...",
             interned.test.len()
         );
-        let all_triples = interned.all_triples();
+        let test_tuples: Vec<_> = interned.test.iter().map(|t| t.as_tuple()).collect();
+        let all_tuples = interned.all_triples();
         let scorer: Box<dyn Scorer + Sync> = match model_type {
             ModelType::TransE => Box::new(result.model.to_transe().unwrap()),
             ModelType::RotatE => Box::new(result.model.to_rotate().unwrap()),
@@ -531,8 +539,8 @@ fn cmd_train(args: &[String]) {
         };
         let result = evaluate_link_prediction_detailed(
             scorer.as_ref(),
-            &interned.test,
-            &all_triples,
+            &test_tuples,
+            &all_tuples,
             interned.num_entities(),
         );
         let m = result.metrics;
@@ -548,11 +556,7 @@ fn cmd_train(args: &[String]) {
             let mut rels: Vec<_> = result.per_relation.iter().collect();
             rels.sort_by_key(|&(id, _)| *id);
             for (&rel_id, metrics) in &rels {
-                let name = interned
-                    .id_to_relation
-                    .get(rel_id)
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
+                let name = interned.relations.get(rel_id).unwrap_or("?");
                 println!(
                     "  {name:<30} MRR={:.4}  H@10={:.4}",
                     metrics.mrr, metrics.hits_at_10
@@ -652,11 +656,12 @@ fn cmd_eval(args: &[String]) {
         "Evaluating on test set ({} triples)...",
         interned.test.len()
     );
-    let all_triples = interned.all_triples();
+    let test_tuples: Vec<_> = interned.test.iter().map(|t| t.as_tuple()).collect();
+    let all_tuples = interned.all_triples();
     let result = evaluate_link_prediction_detailed(
         scorer.as_ref(),
-        &interned.test,
-        &all_triples,
+        &test_tuples,
+        &all_tuples,
         interned.num_entities(),
     );
 
@@ -672,11 +677,7 @@ fn cmd_eval(args: &[String]) {
         let mut rels: Vec<_> = result.per_relation.iter().collect();
         rels.sort_by_key(|&(id, _)| *id);
         for (&rel_id, metrics) in &rels {
-            let name = interned
-                .id_to_relation
-                .get(rel_id)
-                .map(|s| s.as_str())
-                .unwrap_or("?");
+            let name = interned.relations.get(rel_id).unwrap_or("?");
             println!(
                 "  {name:<30} MRR={:.4}  H@10={:.4}",
                 metrics.mrr, metrics.hits_at_10
