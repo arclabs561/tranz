@@ -13,12 +13,17 @@ Dual-licensed under MIT or Apache-2.0.
 
 ## Models
 
-| Model | Scoring function | Space | Reference |
+Each model scores a triple (head, relation, tail) differently:
+
+| Model | Scoring function | Intuition | Reference |
 |---|---|---|---|
-| TransE | $\lVert \mathbf{h} + \mathbf{r} - \mathbf{t} \rVert$ | Real | Bordes et al., 2013 |
-| RotatE | $\lVert \mathbf{h} \circ \mathbf{r} - \mathbf{t} \rVert$ | Complex | Sun et al., 2019 |
-| ComplEx | $\operatorname{Re}(\langle \mathbf{h}, \mathbf{r}, \bar{\mathbf{t}} \rangle)$ | Complex | Trouillon et al., 2016 |
-| DistMult | $\langle \mathbf{h}, \mathbf{r}, \mathbf{t} \rangle$ | Real | Yang et al., 2015 |
+| TransE | $\lVert \mathbf{h} + \mathbf{r} - \mathbf{t} \rVert$ | Translation: tail = head + relation | Bordes et al., 2013 |
+| RotatE | $\lVert \mathbf{h} \circ \mathbf{r} - \mathbf{t} \rVert$ | Rotation in complex plane | Sun et al., 2019 |
+| ComplEx | $\text{Re}(\langle \mathbf{h}, \mathbf{r}, \bar{\mathbf{t}} \rangle)$ | Asymmetric via complex conjugate | Trouillon et al., 2016 |
+| DistMult | $\langle \mathbf{h}, \mathbf{r}, \mathbf{t} \rangle$ | Element-wise product, symmetric | Yang et al., 2015 |
+
+$\mathbf{h}, \mathbf{r}, \mathbf{t}$ are learned embedding vectors for head, relation, and tail.
+$\lVert \cdot \rVert$ is the L2 norm, $\circ$ is element-wise product, $\langle \cdot \rangle$ is the trilinear dot product, $\bar{\mathbf{t}}$ is the complex conjugate.
 
 ## Quick start
 
