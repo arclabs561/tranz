@@ -616,9 +616,9 @@ pub struct TrainResult {
 /// Validation data for early stopping.
 pub struct ValidationData<'a> {
     /// Validation triples to evaluate.
-    pub valid_triples: &'a [(usize, usize, usize)],
-    /// All known triples (train + valid + test) for filtered evaluation.
-    pub all_triples: &'a [(usize, usize, usize)],
+    pub valid_triples: &'a [crate::dataset::TripleIds],
+    /// Pre-built filter index for filtered evaluation.
+    pub filter: &'a crate::dataset::FilterIndex,
 }
 
 /// Train a KGE model on the given triples.
@@ -632,7 +632,7 @@ pub struct ValidationData<'a> {
 ///
 /// Returns the trained model and per-epoch loss history.
 pub fn train(
-    train_triples: &[(usize, usize, usize)],
+    train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     config: &TrainConfig,
@@ -650,7 +650,7 @@ pub fn train(
 
 /// Train with optional validation-based early stopping.
 pub fn train_with_validation(
-    train_triples: &[(usize, usize, usize)],
+    train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     config: &TrainConfig,
@@ -708,9 +708,13 @@ pub fn train_with_validation(
             std::collections::HashMap::new();
         let mut kh: std::collections::HashMap<(usize, usize), Vec<usize>> =
             std::collections::HashMap::new();
-        for &(h, r, t) in train_triples {
-            kt.entry((h, r)).or_default().push(t);
-            kh.entry((r, t)).or_default().push(h);
+        for triple in train_triples {
+            kt.entry((triple.head, triple.relation))
+                .or_default()
+                .push(triple.tail);
+            kh.entry((triple.relation, triple.tail))
+                .or_default()
+                .push(triple.head);
         }
         (Some(kt), Some(kh))
     } else {
@@ -732,9 +736,9 @@ pub fn train_with_validation(
     // Precompute entity frequency for optional subsampling weights.
     let entity_freq = if config.subsampling {
         let mut freq = vec![0u32; num_entities];
-        for &(h, _, t) in train_triples {
-            freq[h] += 1;
-            freq[t] += 1;
+        for triple in train_triples {
+            freq[triple.head] += 1;
+            freq[triple.tail] += 1;
         }
         Some(freq)
     } else {
@@ -744,7 +748,7 @@ pub fn train_with_validation(
     let mut losses = Vec::with_capacity(config.epochs);
     let mut epoch_times = Vec::with_capacity(config.epochs);
     let mut snapshots = Vec::new();
-    let mut shuffled: Vec<(usize, usize, usize)> = train_triples.to_vec();
+    let mut shuffled: Vec<crate::dataset::TripleIds> = train_triples.to_vec();
     let mut best_mrr = f32::NEG_INFINITY;
     let mut patience_counter = 0_usize;
 
@@ -788,9 +792,9 @@ pub fn train_with_validation(
             let actual_bs = batch.len();
             offset = end;
 
-            let heads_data: Vec<u32> = batch.iter().map(|&(h, _, _)| h as u32).collect();
-            let rels_data: Vec<u32> = batch.iter().map(|&(_, r, _)| r as u32).collect();
-            let tails_data: Vec<u32> = batch.iter().map(|&(_, _, t)| t as u32).collect();
+            let heads_data: Vec<u32> = batch.iter().map(|t| t.head as u32).collect();
+            let rels_data: Vec<u32> = batch.iter().map(|t| t.relation as u32).collect();
+            let tails_data: Vec<u32> = batch.iter().map(|t| t.tail as u32).collect();
 
             let heads = Tensor::from_vec(heads_data, actual_bs, &model.device)?;
             let rels = Tensor::from_vec(rels_data, actual_bs, &model.device)?;
@@ -812,8 +816,8 @@ pub fn train_with_validation(
                     let kt = known_tails.as_ref().unwrap();
                     let tgt = &mut tail_target_buf[..actual_bs * num_entities];
                     tgt.fill(0.0);
-                    for (i, &(h, r, _)) in batch.iter().enumerate() {
-                        let tails = kt.get(&(h, r)).unwrap();
+                    for (i, triple) in batch.iter().enumerate() {
+                        let tails = kt.get(&(triple.head, triple.relation)).unwrap();
                         let w = 1.0 / tails.len() as f32;
                         for &t in tails {
                             tgt[i * num_entities + t] = w;
@@ -828,8 +832,8 @@ pub fn train_with_validation(
                     let kh = known_heads.as_ref().unwrap();
                     let htgt = &mut head_target_buf[..actual_bs * num_entities];
                     htgt.fill(0.0);
-                    for (i, &(_, r, t)) in batch.iter().enumerate() {
-                        let heads = kh.get(&(r, t)).unwrap();
+                    for (i, triple) in batch.iter().enumerate() {
+                        let heads = kh.get(&(triple.relation, triple.tail)).unwrap();
                         let w = 1.0 / heads.len() as f32;
                         for &h in heads {
                             htgt[i * num_entities + h] = w;
@@ -846,7 +850,7 @@ pub fn train_with_validation(
                 } else {
                     // 1vsAll: single-target CE via gather (Lacroix 2018).
                     let tail_ids = Tensor::from_vec(
-                        batch.iter().map(|&(_, _, t)| t as u32).collect::<Vec<_>>(),
+                        batch.iter().map(|t| t.tail as u32).collect::<Vec<_>>(),
                         actual_bs,
                         &model.device,
                     )?;
@@ -857,7 +861,7 @@ pub fn train_with_validation(
                         .mean_all()?;
 
                     let head_ids = Tensor::from_vec(
-                        batch.iter().map(|&(h, _, _)| h as u32).collect::<Vec<_>>(),
+                        batch.iter().map(|t| t.head as u32).collect::<Vec<_>>(),
                         actual_bs,
                         &model.device,
                     )?;
@@ -939,7 +943,7 @@ pub fn train_with_validation(
                 if let Some(ref freq) = entity_freq {
                     let subsample_w: Vec<f32> = batch
                         .iter()
-                        .map(|&(h, _, t)| 1.0 / ((freq[h] + freq[t]) as f32).sqrt())
+                        .map(|triple| 1.0 / ((freq[triple.head] + freq[triple.tail]) as f32).sqrt())
                         .collect();
                     let subsample_t = Tensor::from_vec(subsample_w, actual_bs, &model.device)?;
                     (&per_triple_loss * &subsample_t)?.mean_all()?
@@ -1060,7 +1064,7 @@ pub fn train_with_validation(
                 let metrics = crate::eval::evaluate_link_prediction(
                     scorer.as_ref(),
                     val.valid_triples,
-                    val.all_triples,
+                    val.filter,
                     num_entities,
                 );
                 if metrics.mrr > best_mrr {
@@ -1118,7 +1122,12 @@ fn tensor_to_vecs(t: &Tensor) -> Result<Vec<Vec<f32>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dataset::TripleIds;
     use crate::Scorer;
+
+    fn tid(h: usize, r: usize, t: usize) -> TripleIds {
+        TripleIds::new(h, r, t)
+    }
 
     #[test]
     fn log_sigmoid_basic() {
@@ -1136,7 +1145,7 @@ mod tests {
     #[test]
     fn train_transe_smoke() {
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 1, 0), (0, 1, 2)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0), tid(0, 1, 2)];
         let config = TrainConfig {
             model_type: ModelType::TransE,
             dim: 8,
@@ -1159,7 +1168,7 @@ mod tests {
     #[test]
     fn train_rotate_smoke() {
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2)];
         let config = TrainConfig {
             model_type: ModelType::RotatE,
             dim: 4,
@@ -1181,7 +1190,7 @@ mod tests {
     #[test]
     fn train_complex_with_n3() {
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2)];
         let config = TrainConfig {
             model_type: ModelType::ComplEx,
             dim: 4,
@@ -1203,7 +1212,7 @@ mod tests {
     #[test]
     fn train_distmult_smoke() {
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2)];
         let config = TrainConfig {
             model_type: ModelType::DistMult,
             dim: 8,
@@ -1226,7 +1235,7 @@ mod tests {
     fn loss_decreases() {
         let device = Device::Cpu;
         // Enough data and epochs for loss to decrease.
-        let triples: Vec<_> = (0..20).map(|i| (i % 10, i % 3, (i + 1) % 10)).collect();
+        let triples: Vec<_> = (0..20).map(|i| tid(i % 10, i % 3, (i + 1) % 10)).collect();
         let config = TrainConfig {
             model_type: ModelType::TransE,
             dim: 16,
@@ -1253,7 +1262,7 @@ mod tests {
         // 5 entities, 1 relation: 0->1, 1->2, 2->3, 3->4.
         // After training, score(0,0,1) should be the best among all tails.
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 0, 3), (3, 0, 4)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)];
         let config = TrainConfig {
             model_type: ModelType::TransE,
             dim: 32,
@@ -1269,7 +1278,23 @@ mod tests {
         let result = train(&triples, 5, 1, &config, &device).unwrap();
         let model = result.model.to_transe().unwrap();
 
-        let metrics = crate::eval::evaluate_link_prediction(&model, &triples, &triples, 5);
+        let ds = crate::dataset::Dataset::new(
+            triples
+                .iter()
+                .map(|t| {
+                    crate::dataset::Triple::new(
+                        t.head.to_string(),
+                        t.relation.to_string(),
+                        t.tail.to_string(),
+                    )
+                })
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .into_interned();
+        let filter = crate::dataset::FilterIndex::from_dataset(&ds);
+        let metrics = crate::eval::evaluate_link_prediction(&model, &triples, &filter, 5);
         assert!(
             metrics.mrr > 0.3,
             "TransE should achieve MRR > 0.3 on trivial graph, got {:.4}",
@@ -1280,7 +1305,7 @@ mod tests {
     #[test]
     fn one_to_n_distmult_smoke() {
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 1, 0), (0, 1, 2)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0), tid(0, 1, 2)];
         let config = TrainConfig {
             model_type: ModelType::DistMult,
             dim: 8,
@@ -1303,7 +1328,7 @@ mod tests {
     #[test]
     fn one_to_n_transe_smoke() {
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 0, 3)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3)];
         let config = TrainConfig {
             model_type: ModelType::TransE,
             dim: 8,
@@ -1321,7 +1346,7 @@ mod tests {
     #[test]
     fn adagrad_optimizer_smoke() {
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2), (2, 1, 0), (0, 1, 2)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0), tid(0, 1, 2)];
         let config = TrainConfig {
             model_type: ModelType::DistMult,
             optimizer: OptimizerType::Adagrad,
@@ -1348,7 +1373,7 @@ mod tests {
         // Triple (0,0,1) and (0,0,2) share (h=0, r=0).
         // Multi-hot target should have weight 0.5 on both entities 1 and 2.
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (0, 0, 2), (1, 0, 0)];
+        let triples = vec![tid(0, 0, 1), tid(0, 0, 2), tid(1, 0, 0)];
         let config = TrainConfig {
             model_type: ModelType::DistMult,
             dim: 8,
@@ -1365,7 +1390,7 @@ mod tests {
     fn n3_regularization_complex_moduli() {
         // Verify N3 with ComplEx doesn't NaN.
         let device = Device::Cpu;
-        let triples = vec![(0, 0, 1), (1, 0, 2)];
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2)];
         let config = TrainConfig {
             model_type: ModelType::ComplEx,
             dim: 4,
@@ -1382,7 +1407,7 @@ mod tests {
     #[test]
     fn l2_regularization_reduces_embedding_norm() {
         let device = Device::Cpu;
-        let triples: Vec<_> = (0..20).map(|i| (i % 5, 0, (i + 1) % 5)).collect();
+        let triples: Vec<_> = (0..20).map(|i| tid(i % 5, 0, (i + 1) % 5)).collect();
         let config = TrainConfig {
             model_type: ModelType::DistMult,
             dim: 8,

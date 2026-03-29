@@ -22,10 +22,11 @@
 //! Evaluation is parallelized across test triples via rayon. Each test triple
 //! is scored independently against all entities.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use rayon::prelude::*;
 
+use crate::dataset::{FilterIndex, TripleIds};
 use crate::Scorer;
 
 /// Link prediction metrics.
@@ -66,11 +67,11 @@ pub struct EvalResult {
 /// Evaluation is parallelized across test triples via rayon.
 pub fn evaluate_link_prediction(
     model: &(dyn Scorer + Sync),
-    test_triples: &[(usize, usize, usize)],
-    all_triples: &[(usize, usize, usize)],
+    test_triples: &[TripleIds],
+    filter: &FilterIndex,
     num_entities: usize,
 ) -> Metrics {
-    evaluate_link_prediction_detailed(model, test_triples, all_triples, num_entities).metrics
+    evaluate_link_prediction_detailed(model, test_triples, filter, num_entities).metrics
 }
 
 /// Evaluate link prediction with per-relation breakdown.
@@ -79,8 +80,8 @@ pub fn evaluate_link_prediction(
 /// per-relation metrics keyed by relation ID.
 pub fn evaluate_link_prediction_detailed(
     model: &(dyn Scorer + Sync),
-    test_triples: &[(usize, usize, usize)],
-    all_triples: &[(usize, usize, usize)],
+    test_triples: &[TripleIds],
+    filter: &FilterIndex,
     _num_entities: usize,
 ) -> EvalResult {
     if test_triples.is_empty() {
@@ -90,23 +91,24 @@ pub fn evaluate_link_prediction_detailed(
         };
     }
 
-    let known: HashSet<(usize, usize, usize)> = all_triples.iter().copied().collect();
-
     // Parallel: each test triple produces two (relation, rank) pairs.
     // Uses batch scoring (score_all_tails / score_all_heads) for ~N-fold speedup
     // over per-entity score() calls, where N = num_entities.
     let rel_ranks: Vec<(usize, u32)> = test_triples
         .par_iter()
-        .flat_map_iter(|&(h, r, t)| {
+        .flat_map_iter(|triple| {
+            let (h, r, t) = (triple.head, triple.relation, triple.tail);
+
             // Tail prediction: score all entities as tail replacements.
             let tail_scores = model.score_all_tails(h, r);
             let target_tail_score = tail_scores[t];
+            let known_tails = filter.known_tails(h, r);
             let mut tail_rank = 1u32;
             for (t_prime, &score) in tail_scores.iter().enumerate() {
                 if t_prime == t {
                     continue;
                 }
-                if known.contains(&(h, r, t_prime)) {
+                if known_tails.contains(&t_prime) {
                     continue;
                 }
                 if score < target_tail_score {
@@ -117,12 +119,13 @@ pub fn evaluate_link_prediction_detailed(
             // Head prediction: score all entities as head replacements.
             let head_scores = model.score_all_heads(r, t);
             let target_head_score = head_scores[h];
+            let known_heads = filter.known_heads(r, t);
             let mut head_rank = 1u32;
             for (h_prime, &score) in head_scores.iter().enumerate() {
                 if h_prime == h {
                     continue;
                 }
-                if known.contains(&(h_prime, r, t)) {
+                if known_heads.contains(&h_prime) {
                     continue;
                 }
                 if score < target_head_score {
@@ -174,6 +177,30 @@ fn compute_metrics(ranks: &[u32]) -> Metrics {
 mod tests {
     use super::*;
 
+    fn tid(h: usize, r: usize, t: usize) -> TripleIds {
+        TripleIds::new(h, r, t)
+    }
+
+    fn make_filter(triples: &[TripleIds]) -> FilterIndex {
+        use crate::dataset::{Dataset, Triple};
+        let ds = Dataset::new(
+            triples
+                .iter()
+                .map(|t| {
+                    Triple::new(
+                        t.head.to_string(),
+                        t.relation.to_string(),
+                        t.tail.to_string(),
+                    )
+                })
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .into_interned();
+        FilterIndex::from_dataset(&ds)
+    }
+
     struct PerfectModel;
 
     impl Scorer for PerfectModel {
@@ -192,9 +219,9 @@ mod tests {
 
     #[test]
     fn perfect_model_gets_mrr_1() {
-        let test = vec![(0, 0, 0)];
-        let all = vec![(0, 0, 0)];
-        let metrics = evaluate_link_prediction(&PerfectModel, &test, &all, 5);
+        let test = vec![tid(0, 0, 0)];
+        let filter = make_filter(&test);
+        let metrics = evaluate_link_prediction(&PerfectModel, &test, &filter, 5);
         assert!((metrics.mrr - 1.0).abs() < 1e-6, "MRR = {}", metrics.mrr);
         assert!((metrics.hits_at_1 - 1.0).abs() < 1e-6);
     }
@@ -211,9 +238,16 @@ mod tests {
             }
         }
 
-        let all = vec![(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3), (0, 0, 4)];
-        let test = vec![(0, 0, 0)];
-        let metrics = evaluate_link_prediction(&ConstantModel, &test, &all, 5);
+        let all = vec![
+            tid(0, 0, 0),
+            tid(0, 0, 1),
+            tid(0, 0, 2),
+            tid(0, 0, 3),
+            tid(0, 0, 4),
+        ];
+        let test = vec![tid(0, 0, 0)];
+        let filter = make_filter(&all);
+        let metrics = evaluate_link_prediction(&ConstantModel, &test, &filter, 5);
         assert!(
             (metrics.mrr - 1.0).abs() < 1e-6,
             "Filtered MRR should be 1.0, got {}",
@@ -223,7 +257,8 @@ mod tests {
 
     #[test]
     fn empty_test_returns_zeroed_metrics() {
-        let metrics = evaluate_link_prediction(&PerfectModel, &[], &[], 5);
+        let filter = make_filter(&[]);
+        let metrics = evaluate_link_prediction(&PerfectModel, &[], &filter, 5);
         assert_eq!(metrics.mrr, 0.0);
     }
 
@@ -239,9 +274,9 @@ mod tests {
             }
         }
 
-        let test = vec![(0, 0, 1)];
-        let all = vec![(0, 0, 1)];
-        let metrics = evaluate_link_prediction(&TiedModel, &test, &all, 3);
+        let test = vec![tid(0, 0, 1)];
+        let filter = make_filter(&test);
+        let metrics = evaluate_link_prediction(&TiedModel, &test, &filter, 3);
         assert!(
             (metrics.hits_at_1 - 1.0).abs() < 1e-6,
             "Optimistic tie-breaking: rank should be 1 when all scores tie"
@@ -268,9 +303,9 @@ mod tests {
             }
         }
 
-        let test = vec![(0, 0, 1), (0, 1, 1)];
-        let all = vec![(0, 0, 1), (0, 1, 1)];
-        let result = evaluate_link_prediction_detailed(&SplitModel, &test, &all, 3);
+        let test = vec![tid(0, 0, 1), tid(0, 1, 1)];
+        let filter = make_filter(&test);
+        let result = evaluate_link_prediction_detailed(&SplitModel, &test, &filter, 3);
 
         let r0 = result.per_relation[&0];
         let r1 = result.per_relation[&1];
