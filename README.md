@@ -57,7 +57,7 @@ tranz reaches 92% of published with the same recipe (Adagrad, N3, reciprocals).
 
 ```rust
 use tranz::{TransE, DistMult, Scorer};
-use tranz::dataset::{load_dataset, InternedDatasetExt};
+use tranz::dataset::{load_dataset, FilterIndex, InternedDatasetExt};
 use tranz::eval::evaluate_link_prediction;
 
 // Load dataset (types from lattix::kge)
@@ -69,10 +69,9 @@ interned.add_reciprocals();
 let model = DistMult::new(interned.num_entities(), interned.num_relations(), 200);
 let top10 = model.top_k_tails(0, 0, 10);
 
-// Evaluate
-let test: Vec<_> = interned.test.iter().map(|t| t.as_tuple()).collect();
-let all = interned.all_triples();
-let metrics = evaluate_link_prediction(&model, &test, &all, interned.num_entities());
+// Evaluate (filtered link prediction)
+let filter = FilterIndex::from_dataset(&interned);
+let metrics = evaluate_link_prediction(&model, &interned.test, &filter, interned.num_entities());
 ```
 
 ### Generic triple loading
