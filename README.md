@@ -4,7 +4,7 @@ Knowledge graph embedding models.
 
 ```toml
 [dependencies]
-tranz = "0.4.0"
+tranz = "0.5"
 ```
 
 Dual-licensed under MIT or Apache-2.0.
