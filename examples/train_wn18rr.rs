@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use tranz::dataset::{load_dataset, InternedDatasetExt};
+use tranz::dataset::{load_dataset, FilterIndex, InternedDatasetExt};
 use tranz::eval::evaluate_link_prediction;
 use tranz::train::{self, ModelType, TrainConfig};
 use tranz::Scorer;
@@ -135,9 +135,8 @@ fn main() {
     let device = candle_core::Device::Cpu;
     let start = Instant::now();
 
-    let train_tuples: Vec<_> = interned.train.iter().map(|t| t.as_tuple()).collect();
     let result = train::train(
-        &train_tuples,
+        &interned.train,
         interned.num_entities(),
         interned.num_relations(),
         &config,
@@ -167,8 +166,7 @@ fn main() {
         "Evaluating on test set ({} triples)...",
         interned.test.len()
     );
-    let test_tuples: Vec<_> = interned.test.iter().map(|t| t.as_tuple()).collect();
-    let all_tuples = interned.all_triples();
+    let filter = FilterIndex::from_dataset(&interned);
     let num_entities = interned.num_entities();
 
     let eval_start = Instant::now();
@@ -179,8 +177,7 @@ fn main() {
         ModelType::DistMult => Box::new(result.model.to_distmult().unwrap()),
     };
 
-    let metrics =
-        evaluate_link_prediction(scorer.as_ref(), &test_tuples, &all_tuples, num_entities);
+    let metrics = evaluate_link_prediction(scorer.as_ref(), &interned.test, &filter, num_entities);
 
     eprintln!(
         "Evaluation complete in {:.1}s",

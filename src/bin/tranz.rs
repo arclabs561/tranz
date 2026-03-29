@@ -485,9 +485,8 @@ fn cmd_train(args: &[String]) {
     };
     let start = Instant::now();
 
-    let train_tuples: Vec<_> = interned.train.iter().map(|t| t.as_tuple()).collect();
     let result = train::train(
-        &train_tuples,
+        &interned.train,
         interned.num_entities(),
         interned.num_relations(),
         &config,
@@ -523,14 +522,14 @@ fn cmd_train(args: &[String]) {
 
     // Optional evaluation.
     if do_eval && !interned.test.is_empty() {
+        use tranz::dataset::FilterIndex;
         use tranz::eval::evaluate_link_prediction_detailed;
 
         eprintln!(
             "Evaluating on test set ({} triples)...",
             interned.test.len()
         );
-        let test_tuples: Vec<_> = interned.test.iter().map(|t| t.as_tuple()).collect();
-        let all_tuples = interned.all_triples();
+        let filter = FilterIndex::from_dataset(&interned);
         let scorer: Box<dyn Scorer + Sync> = match model_type {
             ModelType::TransE => Box::new(result.model.to_transe().unwrap()),
             ModelType::RotatE => Box::new(result.model.to_rotate().unwrap()),
@@ -539,8 +538,8 @@ fn cmd_train(args: &[String]) {
         };
         let result = evaluate_link_prediction_detailed(
             scorer.as_ref(),
-            &test_tuples,
-            &all_tuples,
+            &interned.test,
+            &filter,
             interned.num_entities(),
         );
         let m = result.metrics;
@@ -567,7 +566,7 @@ fn cmd_train(args: &[String]) {
 }
 
 fn cmd_eval(args: &[String]) {
-    use tranz::dataset;
+    use tranz::dataset::{self, FilterIndex};
     use tranz::eval::evaluate_link_prediction_detailed;
     use tranz::io::load_embeddings;
     use tranz::Scorer;
@@ -656,12 +655,11 @@ fn cmd_eval(args: &[String]) {
         "Evaluating on test set ({} triples)...",
         interned.test.len()
     );
-    let test_tuples: Vec<_> = interned.test.iter().map(|t| t.as_tuple()).collect();
-    let all_tuples = interned.all_triples();
+    let filter = FilterIndex::from_dataset(&interned);
     let result = evaluate_link_prediction_detailed(
         scorer.as_ref(),
-        &test_tuples,
-        &all_tuples,
+        &interned.test,
+        &filter,
         interned.num_entities(),
     );
 
