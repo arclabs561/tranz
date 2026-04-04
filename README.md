@@ -9,6 +9,8 @@ tranz = "0.5"
 
 Dual-licensed under MIT or Apache-2.0.
 
+For context on how point embeddings relate to region-based approaches, see [Why Regions, Not Points](https://attobop.net/posts/region-embeddings/).
+
 ## Models
 
 Each model scores a triple (head, relation, tail) differently:
