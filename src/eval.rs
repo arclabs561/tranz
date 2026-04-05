@@ -34,6 +34,10 @@ use crate::Scorer;
 pub struct Metrics {
     /// Mean Reciprocal Rank (filtered).
     pub mrr: f32,
+    /// MRR for head prediction only (filtered).
+    pub head_mrr: f32,
+    /// MRR for tail prediction only (filtered).
+    pub tail_mrr: f32,
     /// Mean Rank (filtered). Lower = better.
     pub mean_rank: f32,
     /// Hits@1 (filtered).
@@ -91,12 +95,12 @@ pub fn evaluate_link_prediction_detailed(
         };
     }
 
-    // Parallel: each test triple produces two (relation, rank) pairs.
+    // Parallel: each test triple produces (relation, tail_rank, head_rank).
     // Uses batch scoring (score_all_tails / score_all_heads) for ~N-fold speedup
     // over per-entity score() calls, where N = num_entities.
-    let rel_ranks: Vec<(usize, u32)> = test_triples
+    let triple_ranks: Vec<(usize, u32, u32)> = test_triples
         .par_iter()
-        .flat_map_iter(|triple| {
+        .map(|triple| {
             let (h, r, t) = (triple.head, triple.relation, triple.tail);
 
             // Tail prediction: score all entities as tail replacements.
@@ -133,22 +137,35 @@ pub fn evaluate_link_prediction_detailed(
                 }
             }
 
-            [(r, tail_rank), (r, head_rank)]
+            (r, tail_rank, head_rank)
         })
         .collect();
 
-    // Aggregate metrics.
-    let metrics = compute_metrics(&rel_ranks.iter().map(|&(_, rank)| rank).collect::<Vec<_>>());
+    // Aggregate metrics with head/tail split.
+    let tail_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, tr, _)| tr).collect();
+    let head_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, _, hr)| hr).collect();
+    let all_ranks: Vec<u32> = tail_ranks.iter().chain(head_ranks.iter()).copied().collect();
+    let mut metrics = compute_metrics(&all_ranks);
+    metrics.tail_mrr = mrr(&tail_ranks);
+    metrics.head_mrr = mrr(&head_ranks);
 
     // Per-relation metrics.
-    let mut per_rel: HashMap<usize, Vec<u32>> = HashMap::new();
-    for &(r, rank) in &rel_ranks {
-        per_rel.entry(r).or_default().push(rank);
+    let mut per_rel_tail: HashMap<usize, Vec<u32>> = HashMap::new();
+    let mut per_rel_head: HashMap<usize, Vec<u32>> = HashMap::new();
+    for &(r, tr, hr) in &triple_ranks {
+        per_rel_tail.entry(r).or_default().push(tr);
+        per_rel_head.entry(r).or_default().push(hr);
     }
-    let per_relation: HashMap<usize, Metrics> = per_rel
-        .into_iter()
-        .map(|(r, ranks)| (r, compute_metrics(&ranks)))
-        .collect();
+    let mut per_relation: HashMap<usize, Metrics> = HashMap::new();
+    for r in per_rel_tail.keys().chain(per_rel_head.keys()).copied().collect::<std::collections::HashSet<_>>() {
+        let tr = per_rel_tail.get(&r).map(|v| v.as_slice()).unwrap_or(&[]);
+        let hr = per_rel_head.get(&r).map(|v| v.as_slice()).unwrap_or(&[]);
+        let all: Vec<u32> = tr.iter().chain(hr.iter()).copied().collect();
+        let mut m = compute_metrics(&all);
+        m.tail_mrr = mrr(tr);
+        m.head_mrr = mrr(hr);
+        per_relation.insert(r, m);
+    }
 
     EvalResult {
         metrics,
@@ -161,16 +178,26 @@ fn compute_metrics(ranks: &[u32]) -> Metrics {
         return Metrics::default();
     }
     let n = ranks.len() as f64;
-    let mrr = ranks.iter().map(|&r| 1.0 / r as f64).sum::<f64>() / n;
+    let mrr_val = mrr(ranks);
     let mean_rank = ranks.iter().map(|&r| r as f64).sum::<f64>() / n;
     let hits = |k: u32| ranks.iter().filter(|&&r| r <= k).count() as f64 / n;
     Metrics {
-        mrr: mrr as f32,
+        mrr: mrr_val,
+        head_mrr: 0.0,
+        tail_mrr: 0.0,
         mean_rank: mean_rank as f32,
         hits_at_1: hits(1) as f32,
         hits_at_3: hits(3) as f32,
         hits_at_10: hits(10) as f32,
     }
+}
+
+fn mrr(ranks: &[u32]) -> f32 {
+    if ranks.is_empty() {
+        return 0.0;
+    }
+    let n = ranks.len() as f64;
+    (ranks.iter().map(|&r| 1.0 / r as f64).sum::<f64>() / n) as f32
 }
 
 #[cfg(test)]
