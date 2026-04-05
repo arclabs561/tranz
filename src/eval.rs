@@ -144,7 +144,11 @@ pub fn evaluate_link_prediction_detailed(
     // Aggregate metrics with head/tail split.
     let tail_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, tr, _)| tr).collect();
     let head_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, _, hr)| hr).collect();
-    let all_ranks: Vec<u32> = tail_ranks.iter().chain(head_ranks.iter()).copied().collect();
+    let all_ranks: Vec<u32> = tail_ranks
+        .iter()
+        .chain(head_ranks.iter())
+        .copied()
+        .collect();
     let mut metrics = compute_metrics(&all_ranks);
     metrics.tail_mrr = mrr(&tail_ranks);
     metrics.head_mrr = mrr(&head_ranks);
@@ -157,7 +161,12 @@ pub fn evaluate_link_prediction_detailed(
         per_rel_head.entry(r).or_default().push(hr);
     }
     let mut per_relation: HashMap<usize, Metrics> = HashMap::new();
-    for r in per_rel_tail.keys().chain(per_rel_head.keys()).copied().collect::<std::collections::HashSet<_>>() {
+    for r in per_rel_tail
+        .keys()
+        .chain(per_rel_head.keys())
+        .copied()
+        .collect::<std::collections::HashSet<_>>()
+    {
         let tr = per_rel_tail.get(&r).map(|v| v.as_slice()).unwrap_or(&[]);
         let hr = per_rel_head.get(&r).map(|v| v.as_slice()).unwrap_or(&[]);
         let all: Vec<u32> = tr.iter().chain(hr.iter()).copied().collect();

@@ -1213,7 +1213,10 @@ mod tests {
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let first = result.losses[0];
         let last = *result.losses.last().unwrap();
-        assert!(last < first, "RotatE loss should decrease: {first} -> {last}");
+        assert!(
+            last < first,
+            "RotatE loss should decrease: {first} -> {last}"
+        );
         let model = result.model.to_rotate().unwrap();
         assert_eq!(model.num_entities(), 3);
     }
@@ -1238,7 +1241,10 @@ mod tests {
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let first = result.losses[0];
         let last = *result.losses.last().unwrap();
-        assert!(last < first, "ComplEx loss should decrease: {first} -> {last}");
+        assert!(
+            last < first,
+            "ComplEx loss should decrease: {first} -> {last}"
+        );
         let model = result.model.to_complex().unwrap();
         assert_eq!(model.num_entities(), 3);
     }
@@ -1263,7 +1269,10 @@ mod tests {
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let first = result.losses[0];
         let last = *result.losses.last().unwrap();
-        assert!(last < first, "DistMult loss should decrease: {first} -> {last}");
+        assert!(
+            last < first,
+            "DistMult loss should decrease: {first} -> {last}"
+        );
         let model = result.model.to_distmult().unwrap();
         assert_eq!(model.num_entities(), 3);
     }
@@ -1542,10 +1551,7 @@ mod tests {
         };
         for epoch in 0..100 {
             let lr = learning_rate(epoch, &config);
-            assert!(
-                lr >= 0.1 * 0.1 - 1e-10,
-                "epoch {epoch}: LR {lr} below min"
-            );
+            assert!(lr >= 0.1 * 0.1 - 1e-10, "epoch {epoch}: LR {lr} below min");
             assert!(lr <= 0.1 + 1e-10, "epoch {epoch}: LR {lr} above base");
         }
     }
