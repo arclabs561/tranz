@@ -113,6 +113,22 @@ proptest! {
             );
         }
     }
+
+    #[test]
+    fn rotate_score_all_heads_matches_individual(
+        r in 0..N_REL,
+        t in 0..N_ENT,
+    ) {
+        let model = RotatE::new(N_ENT, N_REL, DIM, 12.0);
+        let all = model.score_all_heads(r, t);
+        for (h, &score) in all.iter().enumerate() {
+            let individual = model.score(h, r, t);
+            prop_assert!(
+                (score - individual).abs() < 1e-4,
+                "RotatE score_all_heads[{h}]={score} vs score()={individual}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +159,22 @@ proptest! {
             prop_assert!(
                 (score - individual).abs() < 1e-4,
                 "ComplEx score_all_tails[{t}]={score} vs score()={individual}"
+            );
+        }
+    }
+
+    #[test]
+    fn complex_score_all_heads_matches_individual(
+        r in 0..N_REL,
+        t in 0..N_ENT,
+    ) {
+        let model = ComplEx::new(N_ENT, N_REL, DIM);
+        let all = model.score_all_heads(r, t);
+        for (h, &score) in all.iter().enumerate() {
+            let individual = model.score(h, r, t);
+            prop_assert!(
+                (score - individual).abs() < 1e-4,
+                "ComplEx score_all_heads[{h}]={score} vs score()={individual}"
             );
         }
     }
@@ -194,6 +226,22 @@ proptest! {
             );
         }
     }
+
+    #[test]
+    fn distmult_score_all_heads_matches_individual(
+        r in 0..N_REL,
+        t in 0..N_ENT,
+    ) {
+        let model = DistMult::new(N_ENT, N_REL, DIM);
+        let all = model.score_all_heads(r, t);
+        for (h, &score) in all.iter().enumerate() {
+            let individual = model.score(h, r, t);
+            prop_assert!(
+                (score - individual).abs() < 1e-4,
+                "DistMult score_all_heads[{h}]={score} vs score()={individual}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,5 +288,67 @@ fn top_k_best_is_actually_best() {
     assert_eq!(
         top1[0].0, best_idx,
         "top_k_tails[0] should match argmin of score_all_tails"
+    );
+}
+
+#[test]
+fn top_k_heads_best_is_actually_best() {
+    let model = ComplEx::new(30, 3, 16);
+    let top1 = model.top_k_heads(0, 0, 1);
+    let all = model.score_all_heads(0, 0);
+    let best_idx = all
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap()
+        .0;
+    assert_eq!(
+        top1[0].0, best_idx,
+        "top_k_heads[0] should match argmin of score_all_heads"
+    );
+}
+
+#[test]
+fn score_all_relations_matches_individual() {
+    let model = TransE::new(10, 5, 16);
+    let all = model.score_all_relations(0, 1, 5);
+    assert_eq!(all.len(), 5);
+    for (r, &score) in all.iter().enumerate() {
+        let individual = model.score(0, r, 1);
+        assert!(
+            (score - individual).abs() < 1e-5,
+            "score_all_relations[{r}]={score} vs score()={individual}"
+        );
+    }
+}
+
+#[test]
+fn top_k_relations_best_is_actually_best() {
+    let model = DistMult::new(10, 8, 16);
+    let top1 = model.top_k_relations(0, 1, 8, 1);
+    let all = model.score_all_relations(0, 1, 8);
+    let best_idx = all
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap()
+        .0;
+    assert_eq!(
+        top1[0].0, best_idx,
+        "top_k_relations[0] should match argmin of score_all_relations"
+    );
+}
+
+#[test]
+fn transe_unknown_norm_defaults_to_l2() {
+    let entities = vec![vec![3.0, 0.0], vec![0.0, 4.0]];
+    let relations = vec![vec![0.0, 0.0]];
+    // norm=99 should behave like L2 via the `_ =>` match arm
+    let model = TransE::from_vecs_with_norm(entities, relations, 2, 99);
+    let score = model.score_triple(0, 0, 1);
+    // sqrt(9+16) = 5
+    assert!(
+        (score - 5.0).abs() < 1e-4,
+        "Unknown norm should fall back to L2: expected 5, got {score}"
     );
 }

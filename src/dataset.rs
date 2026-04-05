@@ -197,6 +197,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_flexible_drops_malformed_lines() {
+        let content = "Alice\tknows\tBob\nbad line\nCarol\tknows\tDave\n";
+        let triples = super::parse_flexible(content);
+        assert_eq!(triples.len(), 2);
+        assert_eq!(triples[0].head, "Alice");
+        assert_eq!(triples[1].head, "Carol");
+    }
+
+    #[test]
     fn reciprocal_with_multiple_relations() {
         let dir = tempfile::tempdir().unwrap();
         write_triples(

@@ -282,6 +282,19 @@ mod tests {
     }
 
     #[test]
+    fn read_w2v_dim_mismatch() {
+        // Header says dim=3 but data line has 2 values.
+        let bad = b"1 3\nalice\t1.0\t2.0\n";
+        let result = read_w2v_tsv(bad.as_slice());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("expected 3"),
+            "Error should mention expected dim: {msg}"
+        );
+    }
+
+    #[test]
     fn write_vocab_tsv_roundtrip() {
         let names = vec![
             "alice".to_string(),
