@@ -139,10 +139,14 @@ pub struct TrainConfig {
     /// 0 = no warmup.
     pub warmup_epochs: usize,
     /// Cosine annealing LR schedule. If > 0, divides training into this
-    /// many cycles with cosine decay from `lr` to `lr * 0.01` per cycle.
-    /// Snapshots are saved at each cycle trough for ensembling (SnapE).
-    /// 0 = no cosine annealing (use warmup + constant LR).
+    /// many cycles with cosine decay from `lr` to `lr * cosine_min_lr_frac`
+    /// per cycle. Snapshots are saved at each cycle trough for ensembling
+    /// (SnapE). 0 = no cosine annealing (use warmup + constant LR).
     pub cosine_cycles: usize,
+    /// Minimum LR as fraction of base LR for cosine annealing.
+    /// Default: 0.1 (10% of base LR). Values below 0.05 can cause
+    /// late-stage stalling in long training runs.
+    pub cosine_min_lr_frac: f64,
     /// Print loss to stderr every N epochs. 0 = silent.
     pub log_interval: usize,
     /// Evaluate on validation set every N epochs. 0 = no validation.
@@ -180,6 +184,7 @@ impl Default for TrainConfig {
             normalize_entities: false,
             warmup_epochs: 0,
             cosine_cycles: 0,
+            cosine_min_lr_frac: 0.1,
             log_interval: 0,
             eval_interval: 0,
             patience: 5,
@@ -621,6 +626,31 @@ pub struct ValidationData<'a> {
     pub filter: &'a crate::dataset::FilterIndex,
 }
 
+/// Compute the learning rate for a given epoch based on the schedule.
+///
+/// Implements: linear warmup, then either constant LR or cyclic cosine
+/// annealing (SnapE). Returns `config.lr` when no schedule is active.
+pub fn learning_rate(epoch: usize, config: &TrainConfig) -> f64 {
+    let base_lr = config.lr;
+    if config.warmup_epochs > 0 && epoch < config.warmup_epochs {
+        base_lr * (epoch + 1) as f64 / config.warmup_epochs as f64
+    } else if config.cosine_cycles > 0 {
+        let effective_epoch = epoch.saturating_sub(config.warmup_epochs);
+        let total_effective = config.epochs.saturating_sub(config.warmup_epochs);
+        let epochs_per_cycle = total_effective / config.cosine_cycles;
+        if epochs_per_cycle > 0 {
+            let cycle_pos = effective_epoch % epochs_per_cycle;
+            let t = cycle_pos as f64 / epochs_per_cycle as f64;
+            let min_lr = base_lr * config.cosine_min_lr_frac;
+            min_lr + 0.5 * (base_lr - min_lr) * (1.0 + (t * std::f64::consts::PI).cos())
+        } else {
+            base_lr
+        }
+    } else {
+        base_lr
+    }
+}
+
 /// Train a KGE model on the given triples.
 ///
 /// `train_triples` is a slice of `(head, relation, tail)` ID triples.
@@ -751,29 +781,12 @@ pub fn train_with_validation(
     let mut shuffled: Vec<crate::dataset::TripleIds> = train_triples.to_vec();
     let mut best_mrr = f32::NEG_INFINITY;
     let mut patience_counter = 0_usize;
-
-    let base_lr = config.lr;
+    let mut best_entity_vecs: Option<Vec<Vec<f32>>> = None;
+    let mut best_relation_vecs: Option<Vec<Vec<f32>>> = None;
 
     for _epoch in 0..config.epochs {
-        // LR schedule: warmup, then constant or cosine annealing.
-        if config.warmup_epochs > 0 && _epoch < config.warmup_epochs {
-            let lr = base_lr * (_epoch + 1) as f64 / config.warmup_epochs as f64;
-            optimizer.set_learning_rate(lr);
-        } else if config.cosine_cycles > 0 {
-            // Cosine annealing within each cycle (SnapE).
-            let effective_epoch = _epoch.saturating_sub(config.warmup_epochs);
-            let total_effective = config.epochs.saturating_sub(config.warmup_epochs);
-            let epochs_per_cycle = total_effective / config.cosine_cycles;
-            if epochs_per_cycle > 0 {
-                let cycle_pos = effective_epoch % epochs_per_cycle;
-                let t = cycle_pos as f64 / epochs_per_cycle as f64;
-                let lr = base_lr * 0.01
-                    + 0.5 * base_lr * 0.99 * (1.0 + (t * std::f64::consts::PI).cos());
-                optimizer.set_learning_rate(lr);
-            }
-        } else if config.warmup_epochs > 0 && _epoch == config.warmup_epochs {
-            optimizer.set_learning_rate(base_lr);
-        }
+        let lr = learning_rate(_epoch, config);
+        optimizer.set_learning_rate(lr);
 
         let mut epoch_loss = 0.0_f64;
         let mut n_batches = 0u32;
@@ -1070,6 +1083,9 @@ pub fn train_with_validation(
                 if metrics.mrr > best_mrr {
                     best_mrr = metrics.mrr;
                     patience_counter = 0;
+                    // Snapshot best model (copy through CPU to avoid Var storage sharing).
+                    best_entity_vecs = model.entity_vecs().ok();
+                    best_relation_vecs = model.relation_vecs().ok();
                 } else {
                     patience_counter += 1;
                     if patience_counter >= config.patience {
@@ -1083,6 +1099,18 @@ pub fn train_with_validation(
                 }
             }
         }
+    }
+
+    // Restore best-validation model if early stopping saved a snapshot.
+    if let (Some(ent_vecs), Some(rel_vecs)) = (best_entity_vecs, best_relation_vecs) {
+        let ent_flat: Vec<f32> = ent_vecs.iter().flat_map(|v| v.iter().copied()).collect();
+        let rel_flat: Vec<f32> = rel_vecs.iter().flat_map(|v| v.iter().copied()).collect();
+        let ent_shape = model.entity_embeddings.shape().clone();
+        let rel_shape = model.relation_embeddings.shape().clone();
+        let ent_t = Tensor::from_vec(ent_flat, ent_shape, &model.device)?;
+        let rel_t = Tensor::from_vec(rel_flat, rel_shape, &model.device)?;
+        model.entity_embeddings.set(&ent_t)?;
+        model.relation_embeddings.set(&rel_t)?;
     }
 
     Ok(TrainResult {
@@ -1178,11 +1206,14 @@ mod tests {
             lr: 0.01,
             n3_reg: 0.0,
             batch_size: 2,
-            epochs: 3,
+            epochs: 10,
             ..TrainConfig::default()
         };
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
+        let first = result.losses[0];
+        let last = *result.losses.last().unwrap();
+        assert!(last < first, "RotatE loss should decrease: {first} -> {last}");
         let model = result.model.to_rotate().unwrap();
         assert_eq!(model.num_entities(), 3);
     }
@@ -1200,11 +1231,14 @@ mod tests {
             lr: 0.01,
             n3_reg: 0.001,
             batch_size: 2,
-            epochs: 3,
+            epochs: 10,
             ..TrainConfig::default()
         };
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
+        let first = result.losses[0];
+        let last = *result.losses.last().unwrap();
+        assert!(last < first, "ComplEx loss should decrease: {first} -> {last}");
         let model = result.model.to_complex().unwrap();
         assert_eq!(model.num_entities(), 3);
     }
@@ -1222,11 +1256,14 @@ mod tests {
             lr: 0.01,
             n3_reg: 0.0,
             batch_size: 2,
-            epochs: 3,
+            epochs: 10,
             ..TrainConfig::default()
         };
         let result = train(&triples, 3, 1, &config, &device).unwrap();
         assert!(result.losses.iter().all(|l| l.is_finite()));
+        let first = result.losses[0];
+        let last = *result.losses.last().unwrap();
+        assert!(last < first, "DistMult loss should decrease: {first} -> {last}");
         let model = result.model.to_distmult().unwrap();
         assert_eq!(model.num_entities(), 3);
     }
@@ -1427,6 +1464,204 @@ mod tests {
         assert!(
             max_norm < 10.0,
             "L2 reg should keep norms small, got max_norm={max_norm}"
+        );
+    }
+
+    // -- LR schedule -----------------------------------------------------------
+
+    #[test]
+    fn lr_warmup_ramps_linearly() {
+        let config = TrainConfig {
+            lr: 0.01,
+            warmup_epochs: 10,
+            epochs: 100,
+            ..TrainConfig::default()
+        };
+        let lr0 = learning_rate(0, &config);
+        let lr5 = learning_rate(5, &config);
+        let lr9 = learning_rate(9, &config);
+        assert!((lr0 - 0.001).abs() < 1e-10, "epoch 0: {lr0}");
+        assert!((lr5 - 0.006).abs() < 1e-10, "epoch 5: {lr5}");
+        assert!((lr9 - 0.01).abs() < 1e-10, "epoch 9: {lr9}");
+    }
+
+    #[test]
+    fn lr_constant_after_warmup_without_cosine() {
+        let config = TrainConfig {
+            lr: 0.01,
+            warmup_epochs: 5,
+            cosine_cycles: 0,
+            epochs: 100,
+            ..TrainConfig::default()
+        };
+        let lr = learning_rate(50, &config);
+        assert!((lr - 0.01).abs() < 1e-10, "should be base LR: {lr}");
+    }
+
+    #[test]
+    fn lr_cosine_starts_at_base_and_decays() {
+        let config = TrainConfig {
+            lr: 0.01,
+            warmup_epochs: 0,
+            cosine_cycles: 1,
+            cosine_min_lr_frac: 0.1,
+            epochs: 100,
+            ..TrainConfig::default()
+        };
+        let lr_start = learning_rate(0, &config);
+        let lr_mid = learning_rate(50, &config);
+        let lr_end = learning_rate(99, &config);
+        assert!(
+            (lr_start - 0.01).abs() < 1e-6,
+            "cosine should start at base LR: {lr_start}"
+        );
+        assert!(
+            lr_mid < lr_start,
+            "mid-cycle LR should be below start: {lr_mid}"
+        );
+        assert!(
+            lr_end < lr_mid,
+            "end-of-cycle LR should be below mid: {lr_end}"
+        );
+        // Should not go below min_frac * base_lr
+        assert!(
+            lr_end >= 0.001 - 1e-10,
+            "LR should not drop below min: {lr_end}"
+        );
+    }
+
+    #[test]
+    fn lr_cosine_min_frac_respected() {
+        let config = TrainConfig {
+            lr: 0.1,
+            warmup_epochs: 0,
+            cosine_cycles: 1,
+            cosine_min_lr_frac: 0.1,
+            epochs: 100,
+            ..TrainConfig::default()
+        };
+        for epoch in 0..100 {
+            let lr = learning_rate(epoch, &config);
+            assert!(
+                lr >= 0.1 * 0.1 - 1e-10,
+                "epoch {epoch}: LR {lr} below min"
+            );
+            assert!(lr <= 0.1 + 1e-10, "epoch {epoch}: LR {lr} above base");
+        }
+    }
+
+    #[test]
+    fn lr_always_positive() {
+        let config = TrainConfig {
+            lr: 0.001,
+            warmup_epochs: 10,
+            cosine_cycles: 3,
+            cosine_min_lr_frac: 0.1,
+            epochs: 300,
+            ..TrainConfig::default()
+        };
+        for epoch in 0..300 {
+            let lr = learning_rate(epoch, &config);
+            assert!(lr > 0.0, "epoch {epoch}: LR must be positive, got {lr}");
+        }
+    }
+
+    // -- MRR integration tests for all models ---------------------------------
+
+    fn make_trivial_graph() -> Vec<TripleIds> {
+        // 5 entities, 1 relation: 0->1, 1->2, 2->3, 3->4.
+        vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)]
+    }
+
+    fn eval_mrr(
+        triples: &[TripleIds],
+        model: &(dyn crate::Scorer + Sync),
+        num_entities: usize,
+    ) -> f32 {
+        let ds = crate::dataset::Dataset::new(
+            triples
+                .iter()
+                .map(|t| {
+                    crate::dataset::Triple::new(
+                        t.head.to_string(),
+                        t.relation.to_string(),
+                        t.tail.to_string(),
+                    )
+                })
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .into_interned();
+        let filter = crate::dataset::FilterIndex::from_dataset(&ds);
+        crate::eval::evaluate_link_prediction(model, triples, &filter, num_entities).mrr
+    }
+
+    #[test]
+    fn rotate_achieves_nonzero_mrr_on_trivial_graph() {
+        let device = Device::Cpu;
+        let triples = make_trivial_graph();
+        let config = TrainConfig {
+            model_type: ModelType::RotatE,
+            dim: 32,
+            num_negatives: 4,
+            gamma: 6.0,
+            adversarial_temperature: 0.0,
+            lr: 0.01,
+            batch_size: 4,
+            epochs: 500,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 5, 1, &config, &device).unwrap();
+        let model = result.model.to_rotate().unwrap();
+        let mrr = eval_mrr(&triples, &model, 5);
+        assert!(
+            mrr > 0.3,
+            "RotatE should achieve MRR > 0.3 on trivial graph, got {mrr:.4}"
+        );
+    }
+
+    #[test]
+    fn complex_achieves_nonzero_mrr_on_trivial_graph() {
+        let device = Device::Cpu;
+        let triples = make_trivial_graph();
+        let config = TrainConfig {
+            model_type: ModelType::ComplEx,
+            dim: 32,
+            one_to_n: true,
+            lr: 0.01,
+            batch_size: 4,
+            epochs: 200,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 5, 1, &config, &device).unwrap();
+        let model = result.model.to_complex().unwrap();
+        let mrr = eval_mrr(&triples, &model, 5);
+        assert!(
+            mrr > 0.3,
+            "ComplEx should achieve MRR > 0.3 on trivial graph, got {mrr:.4}"
+        );
+    }
+
+    #[test]
+    fn distmult_achieves_nonzero_mrr_on_trivial_graph() {
+        let device = Device::Cpu;
+        let triples = make_trivial_graph();
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            dim: 32,
+            one_to_n: true,
+            lr: 0.01,
+            batch_size: 4,
+            epochs: 200,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 5, 1, &config, &device).unwrap();
+        let model = result.model.to_distmult().unwrap();
+        let mrr = eval_mrr(&triples, &model, 5);
+        assert!(
+            mrr > 0.3,
+            "DistMult should achieve MRR > 0.3 on trivial graph, got {mrr:.4}"
         );
     }
 }
