@@ -48,6 +48,10 @@ required-features = ["candle"]
 name = "bench_training"
 required-features = ["candle"]
 
+[[example]]
+name = "bench_burn"
+required-features = ["candle", "burn-cpu"]
+
 [dev-dependencies]
 proptest = "1.5"
 tempfile = "3"

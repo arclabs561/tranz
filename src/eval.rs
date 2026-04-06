@@ -73,9 +73,9 @@ pub fn evaluate_link_prediction(
     model: &(dyn Scorer + Sync),
     test_triples: &[TripleIds],
     filter: &FilterIndex,
-    num_entities: usize,
+    _num_entities: usize,
 ) -> Metrics {
-    evaluate_link_prediction_detailed(model, test_triples, filter, num_entities).metrics
+    evaluate_link_prediction_detailed(model, test_triples, filter).metrics
 }
 
 /// Evaluate link prediction with per-relation breakdown.
@@ -86,7 +86,6 @@ pub fn evaluate_link_prediction_detailed(
     model: &(dyn Scorer + Sync),
     test_triples: &[TripleIds],
     filter: &FilterIndex,
-    _num_entities: usize,
 ) -> EvalResult {
     if test_triples.is_empty() {
         return EvalResult {
@@ -421,7 +420,7 @@ mod tests {
 
         let test = vec![tid(0, 0, 1), tid(0, 1, 1)];
         let filter = make_filter(&test);
-        let result = evaluate_link_prediction_detailed(&SplitModel, &test, &filter, 3);
+        let result = evaluate_link_prediction_detailed(&SplitModel, &test, &filter);
 
         let r0 = result.per_relation[&0];
         let r1 = result.per_relation[&1];

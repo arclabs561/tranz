@@ -34,14 +34,6 @@ pub mod train;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// Dimension mismatch.
-    #[error("Dimension mismatch: expected {expected}, got {actual}")]
-    DimensionMismatch {
-        /// Expected dimension.
-        expected: usize,
-        /// Actual dimension.
-        actual: usize,
-    },
     /// IO error.
     #[error(transparent)]
     Io(#[from] std::io::Error),

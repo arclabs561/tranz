@@ -556,12 +556,7 @@ fn cmd_train(args: &[String]) {
             ModelType::ComplEx => Box::new(result.model.to_complex().unwrap()),
             ModelType::DistMult => Box::new(result.model.to_distmult().unwrap()),
         };
-        let result = evaluate_link_prediction_detailed(
-            scorer.as_ref(),
-            &interned.test,
-            &filter,
-            interned.num_entities(),
-        );
+        let result = evaluate_link_prediction_detailed(scorer.as_ref(), &interned.test, &filter);
         let m = result.metrics;
         println!("MRR:      {:.4}", m.mrr);
         println!("  head:   {:.4}", m.head_mrr);
@@ -678,12 +673,7 @@ fn cmd_eval(args: &[String]) {
         interned.test.len()
     );
     let filter = FilterIndex::from_dataset(&interned);
-    let result = evaluate_link_prediction_detailed(
-        scorer.as_ref(),
-        &interned.test,
-        &filter,
-        interned.num_entities(),
-    );
+    let result = evaluate_link_prediction_detailed(scorer.as_ref(), &interned.test, &filter);
 
     let m = result.metrics;
     println!("MRR:      {:.4}", m.mrr);
