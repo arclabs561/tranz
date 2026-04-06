@@ -56,6 +56,17 @@ pub enum TNorm {
     Product,
 }
 
+/// Score normalization strategy for converting raw Scorer output to `[0, 1]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScoreNorm {
+    /// Global sigmoid: `sigmoid(-score)`. Simple but uncalibrated.
+    Sigmoid,
+    /// Per-row softmax over all entities. Better calibrated for t-norm
+    /// composition (Yin et al. 2023, FIT). Each entity's score is
+    /// relative to other entities for the same (head, relation) query.
+    Softmax,
+}
+
 /// Configuration for query answering.
 #[derive(Debug, Clone)]
 pub struct QueryConfig {
@@ -74,6 +85,8 @@ pub struct QueryConfig {
     ///
     /// Higher values improve recall at the cost of `O(k * |E|)` per hop.
     pub beam_k: usize,
+    /// Score normalization strategy. Default: [`ScoreNorm::Sigmoid`].
+    pub score_norm: ScoreNorm,
 }
 
 impl Default for QueryConfig {
@@ -82,6 +95,7 @@ impl Default for QueryConfig {
             t_norm_projection: TNorm::Product,
             t_norm_intersection: TNorm::Min,
             beam_k: 128,
+            score_norm: ScoreNorm::Sigmoid,
         }
     }
 }
@@ -195,7 +209,7 @@ fn eval_query(model: &dyn Scorer, query: &Query, config: &QueryConfig, n: usize)
     match query {
         Query::Anchor { entity, relation } => {
             let raw = model.score_all_tails(*entity, *relation);
-            normalize_scores(&raw)
+            normalize_scores(&raw, config.score_norm)
         }
         Query::Project { inner, relation } => {
             let inner_scores = eval_query(model, inner, config, n);
@@ -242,35 +256,32 @@ fn beam_project(
     let norm = config.t_norm_projection;
 
     match norm {
-        TNorm::Min => {
-            // Deferred sigmoid: min(sigmoid(a), sigmoid(b)) = sigmoid(min(a, b))
-            // since sigmoid is monotone. Work in raw-score space (negated: higher = better).
+        TNorm::Min if config.score_norm == ScoreNorm::Sigmoid => {
+            // Deferred sigmoid optimization: since sigmoid is monotone,
+            // min(sigmoid(a), sigmoid(b)) = sigmoid(min(a, b)).
+            // Work in raw-score space, apply sigmoid once at the end.
             let mut best_raw = vec![f32::NEG_INFINITY; n];
             for &(entity, inner_score) in &candidates {
-                // Convert inner_score back to raw: sigmoid(-raw) = inner_score → raw = -logit(inner_score)
-                // But we can just compare min(inner_raw, tail_raw) where raw = -logit(prob).
-                // Since sigmoid is monotone, min(prob_a, prob_b) = sigmoid(min(raw_a, raw_b))
-                // where raw = -score (negated scorer output). So inner_raw = logit(inner_score).
                 let inner_raw = logit(inner_score);
                 let raw_tail_scores = model.score_all_tails(entity, relation);
                 for (t, &raw) in raw_tail_scores.iter().enumerate() {
-                    let tail_raw = -raw; // negate: higher = better
+                    let tail_raw = -raw;
                     let combined_raw = inner_raw.min(tail_raw);
                     if combined_raw > best_raw[t] {
                         best_raw[t] = combined_raw;
                     }
                 }
             }
-            // Apply sigmoid once per entity.
             best_raw.iter().map(|&r| sigmoid(r)).collect()
         }
-        TNorm::Product => {
+        _ => {
+            // General path: normalize per beam candidate, combine with t-norm.
             let mut result = vec![0.0_f32; n];
             for &(entity, inner_score) in &candidates {
                 let raw_tail_scores = model.score_all_tails(entity, relation);
-                for (t, &raw) in raw_tail_scores.iter().enumerate() {
-                    let tail_prob = sigmoid(-raw);
-                    let combined = inner_score * tail_prob;
+                let tail_probs = normalize_scores(&raw_tail_scores, config.score_norm);
+                for (t, &tail_prob) in tail_probs.iter().enumerate() {
+                    let combined = apply_t_norm(inner_score, tail_prob, norm);
                     if combined > result[t] {
                         result[t] = combined;
                     }
@@ -287,8 +298,22 @@ fn logit(p: f32) -> f32 {
 }
 
 /// Convert raw Scorer outputs (lower=better) to `[0, 1]` (higher=better).
-fn normalize_scores(raw: &[f32]) -> Vec<f32> {
-    raw.iter().map(|&s| sigmoid(-s)).collect()
+fn normalize_scores(raw: &[f32], norm: ScoreNorm) -> Vec<f32> {
+    match norm {
+        ScoreNorm::Sigmoid => raw.iter().map(|&s| sigmoid(-s)).collect(),
+        ScoreNorm::Softmax => {
+            // Per-row softmax over negated scores (higher raw = worse,
+            // so negate before softmax to get higher = better).
+            let max = raw.iter().copied().fold(f32::INFINITY, |a, b| a.min(b)); // min raw = best
+            let exps: Vec<f32> = raw.iter().map(|&s| (-(s - max)).exp()).collect();
+            let sum: f32 = exps.iter().sum();
+            if sum > 0.0 {
+                exps.iter().map(|&e| e / sum).collect()
+            } else {
+                vec![1.0 / raw.len() as f32; raw.len()]
+            }
+        }
+    }
 }
 
 fn sigmoid(x: f32) -> f32 {
@@ -387,7 +412,8 @@ mod tests {
         let config = QueryConfig {
             t_norm_projection: TNorm::Product,
             t_norm_intersection: TNorm::Min,
-            beam_k: 20, // full beam for small model
+            beam_k: 20,
+            ..QueryConfig::default()
         };
         // 2p: entity 0 -rel 0-> V -rel 2-> ?
         // Step 1: best V for (0, 0, ?) is entity 1 (0+0+1=1)
@@ -479,6 +505,7 @@ mod tests {
             t_norm_projection: TNorm::Min,
             t_norm_intersection: TNorm::Min,
             beam_k: 20,
+            ..QueryConfig::default()
         };
         // pi: (entity 0 -rel 4-> V) AND (entity 2 -rel 2-> V), then V -rel 0-> ?
         // Both branches agree on V=5, so intersection peaks at V=5.
