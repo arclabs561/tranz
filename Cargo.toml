@@ -24,11 +24,16 @@ rand = { version = "0.9", optional = true }
 lattix = { version = "0.6", default-features = false, features = ["kge"] }
 rayon = "1"
 thiserror = "2"
+burn = { version = "0.20", features = ["autodiff"], optional = true }
+burn-ndarray = { version = "0.20", features = ["rayon"], optional = true }
+burn-wgpu = { version = "0.20", optional = true }
 
 [features]
 default = ["rand"]
 candle = ["dep:candle-core", "dep:candle-nn", "rand"]
 cuda = ["candle", "candle-core/cuda"]
+burn-cpu = ["dep:burn", "dep:burn-ndarray", "rand"]
+burn-gpu = ["dep:burn", "dep:burn-wgpu", "rand"]
 
 [[bin]]
 name = "tranz"

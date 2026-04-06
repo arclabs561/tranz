@@ -21,6 +21,8 @@
 
 #![warn(missing_docs)]
 
+#[cfg(any(feature = "burn-cpu", feature = "burn-gpu"))]
+pub mod burn_train;
 pub mod dataset;
 pub mod eval;
 pub mod io;
