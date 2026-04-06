@@ -492,6 +492,8 @@ fn cmd_train(args: &[String]) {
         ..TrainConfig::default()
     };
 
+    // Print full command for reproducibility.
+    eprintln!("Command: tranz train {}", args.join(" "));
     eprintln!("Training {model_type:?} dim={dim} gamma={gamma} lr={lr} epochs={epochs}");
     let device = if use_gpu {
         candle_core::Device::new_cuda(0).unwrap_or_else(|e| {
