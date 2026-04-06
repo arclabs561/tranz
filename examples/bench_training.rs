@@ -1,6 +1,7 @@
-/// Benchmark training epoch cost.
-///
-/// Run with: cargo run --release --features candle --example bench_training
+//! Benchmark training epoch cost.
+//!
+//! Run with: `cargo run --release --features candle --example bench_training`
+#![allow(missing_docs)]
 use std::time::Instant;
 use tranz::dataset::{self, InternedDatasetExt};
 use tranz::train::{train, ModelType, TrainConfig};
@@ -38,7 +39,10 @@ fn main() {
     eprintln!("\nComplEx 1-N dim=100 bs=512:");
     eprintln!("  total (3ep): {:.1}s", total.as_secs_f64());
     eprintln!("  per epoch: {per_epoch:.1}s");
-    eprintln!("  per batch: {:.1}ms", per_epoch * 1000.0 / (n_train as f64 / 512.0));
+    eprintln!(
+        "  per batch: {:.1}ms",
+        per_epoch * 1000.0 / (n_train as f64 / 512.0)
+    );
     eprintln!("  losses: {:?}", result.losses);
 
     // Neg sampling for comparison

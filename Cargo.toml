@@ -39,6 +39,10 @@ required-features = ["candle"]
 name = "train_wn18rr"
 required-features = ["candle"]
 
+[[example]]
+name = "bench_training"
+required-features = ["candle"]
+
 [dev-dependencies]
 proptest = "1.5"
 tempfile = "3"

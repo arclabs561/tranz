@@ -1,6 +1,7 @@
-/// Benchmark f32 vs f64 accumulation in dot products.
-///
-/// Run with: cargo run --release --example bench_f32_vs_f64
+//! Benchmark f32 vs f64 accumulation in dot products.
+//!
+//! Run with: `cargo run --release --example bench_f32_vs_f64`
+#![allow(missing_docs)]
 use std::time::Instant;
 
 fn dot_f64(a: &[f32], b: &[f32]) -> f32 {
@@ -25,9 +26,15 @@ fn main() {
 
     // Random vectors
     let vecs: Vec<Vec<f32>> = (0..n)
-        .map(|i| (0..dim).map(|j| ((i * 7 + j * 13) % 1000) as f32 / 1000.0 - 0.5).collect())
+        .map(|i| {
+            (0..dim)
+                .map(|j| ((i * 7 + j * 13) % 1000) as f32 / 1000.0 - 0.5)
+                .collect()
+        })
         .collect();
-    let query: Vec<f32> = (0..dim).map(|j| (j * 17 % 1000) as f32 / 1000.0 - 0.5).collect();
+    let query: Vec<f32> = (0..dim)
+        .map(|j| (j * 17 % 1000) as f32 / 1000.0 - 0.5)
+        .collect();
 
     let iters = 20;
 

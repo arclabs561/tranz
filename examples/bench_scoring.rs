@@ -1,6 +1,7 @@
-/// Quick benchmark of scoring hot paths.
-///
-/// Run with: cargo run --release --example bench_scoring
+//! Quick benchmark of scoring hot paths.
+//!
+//! Run with: `cargo run --release --example bench_scoring`
+#![allow(missing_docs)]
 use std::time::Instant;
 use tranz::{ComplEx, DistMult, RotatE, Scorer, TransE};
 
