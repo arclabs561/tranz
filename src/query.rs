@@ -64,10 +64,11 @@ pub struct QueryConfig {
     /// Product tends to work better for chains (2p, 3p) because it
     /// propagates score magnitude through hops.
     pub t_norm_projection: TNorm,
-    /// T-norm for intersection (AND) operations. Default: [`TNorm::Min`].
+    /// T-norm for intersection (AND) and its De Morgan dual t-conorm
+    /// for union (OR). Default: [`TNorm::Min`].
     ///
-    /// Min tends to work better for intersections (2i, 3i) because it
-    /// selects the weakest evidence.
+    /// Min/max pair tends to work better for intersections (2i, 3i).
+    /// Product/probabilistic-sum pair can work better on some datasets.
     pub t_norm_intersection: TNorm,
     /// Beam width for intermediate variable search. Default: 128.
     ///
@@ -138,12 +139,25 @@ impl Query {
     }
 
     /// Intersect multiple queries (conjunction).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `branches` is empty.
     pub fn intersection(branches: Vec<Query>) -> Self {
+        assert!(
+            !branches.is_empty(),
+            "intersection requires at least one branch"
+        );
         Query::Intersection { branches }
     }
 
     /// Union multiple queries (disjunction).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `branches` is empty.
     pub fn union(branches: Vec<Query>) -> Self {
+        assert!(!branches.is_empty(), "union requires at least one branch");
         Query::Union { branches }
     }
 
@@ -358,9 +372,7 @@ mod tests {
         let scores = answer_query(&model, &query, &config);
         assert_eq!(scores.len(), 10);
 
-        // Entity (2+3+1)%10 = 6 should have the best score (distance 0 → sigmoid(0)=0.5... wait)
-        // Actually distance 0 → sigmoid(-0) = 0.5, distance 1 → sigmoid(-1) ≈ 0.27
-        // The best entity should have the highest normalized score.
+        // Entity (2+3+1)%10 = 6 has distance 0 → sigmoid(0) = 0.5, highest score.
         let best = scores
             .iter()
             .enumerate()

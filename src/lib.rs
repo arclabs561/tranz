@@ -49,7 +49,7 @@ pub enum Error {
 ///
 /// Scores are distances or negative similarities: **lower values indicate
 /// more likely triples**.
-pub trait Scorer {
+pub trait Scorer: Sync {
     /// Score a triple `(head, relation, tail)`. Lower = more likely.
     fn score(&self, head: usize, relation: usize, tail: usize) -> f32;
 
@@ -499,6 +499,37 @@ impl Scorer for RotatE {
                 for i in 0..dim {
                     let d_re = hr_re[i] - t[i] as f64;
                     let d_im = hr_im[i] - t[dim + i] as f64;
+                    dist_sq += d_re * d_re + d_im * d_im;
+                }
+                dist_sq.sqrt() as f32
+            })
+            .collect()
+    }
+
+    fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
+        let r = row(&self.relation_angles, relation, self.dim);
+        let t = row(&self.entities, tail, self.dim * 2);
+        let dim = self.dim;
+        let n = self.num_entities();
+        // Precompute t * conj(r) once: inverse rotation applied to tail.
+        // conj(r) has angles -theta, so cos(-t)=cos(t), sin(-t)=-sin(t).
+        let mut tr_re = vec![0.0_f64; dim];
+        let mut tr_im = vec![0.0_f64; dim];
+        for i in 0..dim {
+            let t_re = t[i] as f64;
+            let t_im = t[dim + i] as f64;
+            let (r_sin, r_cos) = (r[i] as f64).sin_cos();
+            // t * conj(r) = t * (cos, -sin)
+            tr_re[i] = t_re * r_cos + t_im * r_sin;
+            tr_im[i] = t_im * r_cos - t_re * r_sin;
+        }
+        (0..n)
+            .map(|hi| {
+                let h = row(&self.entities, hi, dim * 2);
+                let mut dist_sq = 0.0_f64;
+                for i in 0..dim {
+                    let d_re = h[i] as f64 - tr_re[i];
+                    let d_im = h[dim + i] as f64 - tr_im[i];
                     dist_sq += d_re * d_re + d_im * d_im;
                 }
                 dist_sq.sqrt() as f32
