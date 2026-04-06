@@ -49,11 +49,25 @@ tranz predict --embeddings embeddings/ --model distmult \
 | Model | Config | Dim | Epochs | MRR | H@1 | H@10 |
 |-------|--------|-----|--------|-----|-----|------|
 | ComplEx | Adagrad + N3 + reciprocals | 100 | 100 | **0.438** | 0.400 | 0.512 |
-| ComplEx | Adam + reciprocals | 100 | 50 | 0.429 | 0.407 | 0.469 |
+| ComplEx | Adam + 1-N + reciprocals | 100 | 50 | 0.433 | 0.406 | 0.487 |
 | DistMult | Adam + 1-N | 100 | 50 | 0.341 | 0.329 | 0.362 |
 
 Published ComplEx MRR on WN18RR is 0.475 (Lacroix et al. 2018).
 tranz reaches 92% of published with the same recipe (Adagrad, N3, reciprocals).
+
+Commands to reproduce:
+
+```sh
+# Adagrad + N3 (best)
+tranz train --data data/WN18RR/ --model complex --dim 100 \
+    --1n --reciprocals --optimizer adagrad --init-scale 1e-3 \
+    --n3 0.1 --lr 0.1 --epochs 100 --eval
+
+# Adam + 1-N
+tranz train --data data/WN18RR/ --model complex --dim 100 \
+    --1n --label-smoothing 0.1 --reciprocals \
+    --epochs 50 --lr 0.001 --eval
+```
 
 ## Library usage
 
@@ -137,9 +151,17 @@ let ensemble = EnsembledScorer::new(models);
 let top5 = ensemble.top_k_tails(0, 0, 5);
 ```
 
-## Training (requires `candle` feature)
+## Training
 
-1-N scoring (all entities per query via matmul + softmax CE) is recommended. Negative sampling with SANS weighting is also supported.
+Two backends available:
+
+| Feature | Backend | GPU | Best for |
+|---------|---------|-----|----------|
+| `candle` | Candle | CUDA | Production training, all 4 models |
+| `burn-cpu` | Burn + ndarray | -- | CPU training, ComplEx |
+| `burn-gpu` | Burn + WGPU | Metal/Vulkan | macOS GPU training, ComplEx |
+
+1-N scoring (all entities per query via matmul + softmax CE) is recommended. Negative sampling with SANS weighting is also supported (candle backend only).
 
 ```rust
 use tranz::train::{train, TrainConfig, ModelType};
