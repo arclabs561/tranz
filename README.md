@@ -98,13 +98,48 @@ export_embeddings("output/".as_ref(), &names, &vecs, &rel_names, &rel_vecs).unwr
 let flat: Vec<f32> = flatten_matrix(&vecs);
 ```
 
+### Multi-hop query answering
+
+Answers conjunctive, disjunctive, and negation queries by decomposing them
+into atomic link prediction calls composed with t-norm fuzzy logic
+(CQD-Beam, Arakelyan et al. 2021). No complex-query training needed.
+
+```rust
+use tranz::query::{Query, QueryConfig, answer_query_topk};
+use tranz::DistMult;
+
+let model = DistMult::new(1000, 50, 200);
+
+// 2-hop chain: entity 0 -rel 0-> V -rel 1-> ?
+let q = Query::anchor(0, 0).then(1);
+
+// Intersection: (0 -r0-> ?) AND (1 -r1-> ?)
+let q = Query::intersection(vec![Query::anchor(0, 0), Query::anchor(1, 1)]);
+
+// Intersect-then-project (pi): (0 -r0-> V AND 1 -r1-> V) -r2-> ?
+let q = Query::intersection(vec![Query::anchor(0, 0), Query::anchor(1, 1)]).then(2);
+
+let top10 = answer_query_topk(&model, &q, &QueryConfig::default(), 10);
+```
+
+### Ensemble scoring
+
+Average scores from multiple models (snapshots, different seeds).
+
+```rust
+use tranz::{DistMult, EnsembledScorer, Scorer};
+
+let models: Vec<Box<dyn Scorer>> = vec![
+    Box::new(DistMult::new(100, 10, 50)),
+    Box::new(DistMult::new(100, 10, 50)),
+];
+let ensemble = EnsembledScorer::new(models);
+let top5 = ensemble.top_k_tails(0, 0, 5);
+```
+
 ## Training (requires `candle` feature)
 
-Two training modes:
-
-**1-N scoring** (recommended): scores all entities per query via matmul + BCE loss. Faster convergence, no negative sampling noise.
-
-**Negative sampling** (classic): samples k negatives per positive with self-adversarial weighting (SANS).
+1-N scoring (all entities per query via matmul + softmax CE) is recommended. Negative sampling with SANS weighting is also supported.
 
 ```rust
 use tranz::train::{train, TrainConfig, ModelType};
