@@ -279,6 +279,9 @@ fn cmd_train(args: &[String]) {
     let mut use_gpu = false;
     let mut one_to_n = false;
     let mut label_smoothing = 0.0_f32;
+    let mut l2_reg = 0.0_f32;
+    let mut swa_start_epoch = 0_usize;
+    let mut relation_prediction_weight = 0.0_f32;
 
     let mut i = 0;
     while i < args.len() {
@@ -401,6 +404,18 @@ fn cmd_train(args: &[String]) {
                 i += 1;
                 label_smoothing = args[i].parse().unwrap();
             }
+            "--l2" | "--l2-reg" => {
+                i += 1;
+                l2_reg = args[i].parse().unwrap();
+            }
+            "--swa" | "--swa-start" => {
+                i += 1;
+                swa_start_epoch = args[i].parse().unwrap();
+            }
+            "--rel-pred" => {
+                i += 1;
+                relation_prediction_weight = args[i].parse().unwrap();
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
@@ -471,6 +486,9 @@ fn cmd_train(args: &[String]) {
             None
         },
         checkpoint_interval,
+        l2_reg,
+        swa_start_epoch,
+        relation_prediction_weight,
         ..TrainConfig::default()
     };
 
