@@ -158,6 +158,19 @@ pub struct TrainConfig {
     pub checkpoint_dir: Option<std::path::PathBuf>,
     /// Checkpoint interval in epochs. Only used when `checkpoint_dir` is Some.
     pub checkpoint_interval: usize,
+    /// Stochastic Weight Averaging: start epoch. 0 = disabled.
+    ///
+    /// When > 0, maintains a running average of entity and relation
+    /// embeddings starting at this epoch. The averaged model is returned
+    /// in `TrainResult.swa_entity_vecs` / `swa_relation_vecs`.
+    /// Typical: start at 75% of total epochs. Gives +1-3% MRR.
+    pub swa_start_epoch: usize,
+    /// Relation prediction auxiliary loss weight (1-N mode only). 0 = disabled.
+    ///
+    /// Adds a third loss term that predicts the relation given (head, tail).
+    /// Weight is relative to the main loss. Recommended: 0.1.
+    /// Chen et al. (2021) report +3-6% MRR on FB15k-237.
+    pub relation_prediction_weight: f32,
 }
 
 impl Default for TrainConfig {
@@ -190,6 +203,8 @@ impl Default for TrainConfig {
             patience: 5,
             checkpoint_dir: None,
             checkpoint_interval: 0,
+            swa_start_epoch: 0,
+            relation_prediction_weight: 0.0,
         }
     }
 }
@@ -496,6 +511,55 @@ impl TrainableModel {
         }
     }
 
+    /// Score all relations for a batch of (h, t) queries.
+    ///
+    /// Returns tensor of shape `[batch, num_relations]`.
+    /// Higher = more likely for all models (similarity convention).
+    pub fn score_1n_relations(
+        &self,
+        heads: &Tensor,
+        tails: &Tensor,
+        num_relations: usize,
+    ) -> Result<Tensor> {
+        let h = self.entity_embeddings.as_tensor().index_select(heads, 0)?;
+        let t = self.entity_embeddings.as_tensor().index_select(tails, 0)?;
+        let rel_matrix = self.relation_embeddings.as_tensor(); // [R, dim]
+
+        match self.model_type {
+            ModelType::DistMult => {
+                // score = sum(h * r * t) = (h*t) @ R^T
+                let ht = (h * t)?;
+                ht.matmul(&rel_matrix.t()?)
+            }
+            ModelType::ComplEx => {
+                let dim = self.dim;
+                let h_re = h.i((.., ..dim))?;
+                let h_im = h.i((.., dim..))?;
+                let t_re = t.i((.., ..dim))?;
+                let t_im = t.i((.., dim..))?;
+                // Re(h * conj(t)) components for matching against r
+                let ht_re = ((&h_re * &t_re)? + (&h_im * &t_im)?)?;
+                let ht_im = ((&h_im * &t_re)? - (&h_re * &t_im)?)?;
+                let r_re = rel_matrix.i((.., ..dim))?.contiguous()?;
+                let r_im = rel_matrix.i((.., dim..))?.contiguous()?;
+                let score = (ht_re.matmul(&r_re.t()?)? + ht_im.matmul(&r_im.t()?)?)?;
+                Ok(score)
+            }
+            ModelType::TransE | ModelType::RotatE => {
+                // For distance models, score each relation individually.
+                // Less efficient but relation prediction is auxiliary and rare.
+                let batch_size = h.dim(0)?;
+                let mut scores = Vec::with_capacity(num_relations);
+                for r_idx in 0..num_relations {
+                    let r_ids = Tensor::full(r_idx as u32, batch_size, &self.device)?;
+                    let s = self.score_batch(heads, &r_ids, tails)?;
+                    scores.push(s.neg()?); // negate: higher = more likely
+                }
+                Tensor::stack(&scores, 1)
+            }
+        }
+    }
+
     /// Compute N3 regularization: `||h||_3^3 + ||r||_3^3 + ||t||_3^3`.
     fn n3_penalty(&self, heads: &Tensor, relations: &Tensor, tails: &Tensor) -> Result<Tensor> {
         let h = self.entity_embeddings.as_tensor().index_select(heads, 0)?;
@@ -616,6 +680,10 @@ pub struct TrainResult {
     pub epoch_times: Vec<f32>,
     /// Snapshots taken at cosine annealing cycle troughs (for SnapE ensembling).
     pub snapshots: Vec<Snapshot>,
+    /// SWA-averaged entity embeddings (if `swa_start_epoch > 0`).
+    pub swa_entity_vecs: Option<Vec<Vec<f32>>>,
+    /// SWA-averaged relation embeddings (if `swa_start_epoch > 0`).
+    pub swa_relation_vecs: Option<Vec<Vec<f32>>>,
 }
 
 /// Validation data for early stopping.
@@ -784,6 +852,12 @@ pub fn train_with_validation(
     let mut best_entity_vecs: Option<Vec<Vec<f32>>> = None;
     let mut best_relation_vecs: Option<Vec<Vec<f32>>> = None;
 
+    // SWA running average (flat f32 buffers for efficiency).
+    let swa_active = config.swa_start_epoch > 0;
+    let mut swa_ent: Option<Vec<f32>> = None;
+    let mut swa_rel: Option<Vec<f32>> = None;
+    let mut swa_count = 0u64;
+
     for _epoch in 0..config.epochs {
         let lr = learning_rate(_epoch, config);
         optimizer.set_learning_rate(lr);
@@ -890,13 +964,27 @@ pub fn train_with_validation(
                 // Average head and tail losses.
                 let nll = ((tail_nll + head_nll)? * 0.5)?;
 
-                if eps > 0.0 {
+                let main_loss = if eps > 0.0 {
                     let tail_uniform = tail_log_probs.mean_all()?.neg()?;
                     let head_uniform = head_log_probs.mean_all()?.neg()?;
                     let uniform = ((tail_uniform + head_uniform)? * 0.5)?;
                     ((nll * (1.0 - eps))? + (uniform * eps)?)?
                 } else {
                     nll
+                };
+
+                // Relation prediction auxiliary loss (Chen et al. 2021).
+                if config.relation_prediction_weight > 0.0 {
+                    let rel_scores = model.score_1n_relations(&heads, &tails, num_relations)?;
+                    let rel_log_probs = candle_nn::ops::log_softmax(&rel_scores, D::Minus1)?;
+                    let rel_nll = rel_log_probs
+                        .gather(&rels.unsqueeze(1)?, 1)?
+                        .squeeze(1)?
+                        .neg()?
+                        .mean_all()?;
+                    (main_loss + (rel_nll * config.relation_prediction_weight as f64)?)?
+                } else {
+                    main_loss
                 }
             } else {
                 // Negative sampling with SANS.
@@ -1065,6 +1153,34 @@ pub fn train_with_validation(
             }
         }
 
+        // Stochastic Weight Averaging.
+        if swa_active && _epoch + 1 >= config.swa_start_epoch {
+            if let (Ok(ent_flat), Ok(rel_flat)) = (
+                model
+                    .entity_embeddings
+                    .as_tensor()
+                    .flatten_all()?
+                    .to_vec1::<f32>(),
+                model
+                    .relation_embeddings
+                    .as_tensor()
+                    .flatten_all()?
+                    .to_vec1::<f32>(),
+            ) {
+                swa_count += 1;
+                let update = |avg: &mut Option<Vec<f32>>, current: &[f32]| match avg {
+                    None => *avg = Some(current.to_vec()),
+                    Some(ref mut buf) => {
+                        for (a, &c) in buf.iter_mut().zip(current.iter()) {
+                            *a += (c - *a) / swa_count as f32;
+                        }
+                    }
+                };
+                update(&mut swa_ent, &ent_flat);
+                update(&mut swa_rel, &rel_flat);
+            }
+        }
+
         // Validation-based early stopping.
         if let Some(ref val) = validation {
             if config.eval_interval > 0 && (_epoch + 1) % config.eval_interval == 0 {
@@ -1113,11 +1229,21 @@ pub fn train_with_validation(
         model.relation_embeddings.set(&rel_t)?;
     }
 
+    // Convert SWA flat buffers to Vec<Vec<f32>>.
+    let ent_cols = model.entity_embeddings.as_tensor().dim(1)?;
+    let rel_cols = model.relation_embeddings.as_tensor().dim(1)?;
+    let swa_entity_vecs =
+        swa_ent.map(|flat| flat.chunks_exact(ent_cols).map(|c| c.to_vec()).collect());
+    let swa_relation_vecs =
+        swa_rel.map(|flat| flat.chunks_exact(rel_cols).map(|c| c.to_vec()).collect());
+
     Ok(TrainResult {
         model,
         losses,
         epoch_times,
         snapshots,
+        swa_entity_vecs,
+        swa_relation_vecs,
     })
 }
 
