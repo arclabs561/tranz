@@ -659,6 +659,37 @@ impl Scorer for ComplEx {
             })
             .collect()
     }
+
+    fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
+        let r = row(&self.relations, relation, self.dim * 2);
+        let t = row(&self.entities, tail, self.dim * 2);
+        let dim = self.dim;
+        let n = self.num_entities();
+        // Precompute r * conj(t) once.
+        // conj(t) = (t_re, -t_im)
+        // r * conj(t) = (r_re*t_re + r_im*t_im, r_im*t_re - r_re*t_im)
+        let mut rc_re = vec![0.0_f64; dim];
+        let mut rc_im = vec![0.0_f64; dim];
+        for i in 0..dim {
+            let r_re = r[i] as f64;
+            let r_im = r[dim + i] as f64;
+            let t_re = t[i] as f64;
+            let t_im = t[dim + i] as f64;
+            rc_re[i] = r_re * t_re + r_im * t_im;
+            rc_im[i] = r_im * t_re - r_re * t_im;
+        }
+        (0..n)
+            .map(|hi| {
+                let h = row(&self.entities, hi, dim * 2);
+                let mut dot = 0.0_f64;
+                for i in 0..dim {
+                    // Re(h * rc) = h_re * rc_re - h_im * rc_im
+                    dot += h[i] as f64 * rc_re[i] - h[dim + i] as f64 * rc_im[i];
+                }
+                -(dot as f32)
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -766,7 +797,6 @@ impl Scorer for DistMult {
         let r = row(&self.relations, relation, self.dim);
         let dim = self.dim;
         let n = self.num_entities();
-        // Precompute h * r once.
         let mut hr = vec![0.0_f64; dim];
         for i in 0..dim {
             hr[i] = h[i] as f64 * r[i] as f64;
@@ -778,7 +808,30 @@ impl Scorer for DistMult {
                 for i in 0..dim {
                     dot += hr[i] * t[i] as f64;
                 }
-                -(dot as f32) // negate for distance convention
+                -(dot as f32)
+            })
+            .collect()
+    }
+
+    fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
+        // DistMult is symmetric: score(h,r,t) == score(t,r,h).
+        // Precompute r * t once, then dot with each head.
+        let r = row(&self.relations, relation, self.dim);
+        let t = row(&self.entities, tail, self.dim);
+        let dim = self.dim;
+        let n = self.num_entities();
+        let mut rt = vec![0.0_f64; dim];
+        for i in 0..dim {
+            rt[i] = r[i] as f64 * t[i] as f64;
+        }
+        (0..n)
+            .map(|hi| {
+                let h = row(&self.entities, hi, dim);
+                let mut dot = 0.0_f64;
+                for i in 0..dim {
+                    dot += rt[i] * h[i] as f64;
+                }
+                -(dot as f32)
             })
             .collect()
     }
@@ -825,6 +878,96 @@ fn init_vecs(rng: &mut impl rand::Rng, count: usize, len: usize, scale: f32) -> 
     (0..count)
         .map(|_| (0..len).map(|_| rng.random_range(-scale..scale)).collect())
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Ensemble
+// ---------------------------------------------------------------------------
+
+/// Ensemble scorer that averages scores from multiple models.
+///
+/// Useful for combining snapshot models from cosine annealing (SnapE) or
+/// models trained with different random seeds. Score averaging reduces
+/// predictive multiplicity (Zhu et al., 2024).
+///
+/// ```
+/// # use tranz::{DistMult, Scorer, EnsembledScorer};
+/// let m1 = DistMult::new(100, 10, 50);
+/// let m2 = DistMult::new(100, 10, 50);
+/// let ensemble = EnsembledScorer::new(vec![Box::new(m1), Box::new(m2)]);
+/// assert_eq!(ensemble.num_entities(), 100);
+/// let score = ensemble.score(0, 0, 1);
+/// ```
+pub struct EnsembledScorer {
+    models: Vec<Box<dyn Scorer>>,
+}
+
+impl EnsembledScorer {
+    /// Create an ensemble from multiple scorers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `models` is empty or if models disagree on `num_entities()`.
+    pub fn new(models: Vec<Box<dyn Scorer>>) -> Self {
+        assert!(!models.is_empty(), "ensemble requires at least one model");
+        let n = models[0].num_entities();
+        for (i, m) in models.iter().enumerate().skip(1) {
+            assert_eq!(
+                m.num_entities(),
+                n,
+                "model {i} has {} entities, expected {n}",
+                m.num_entities()
+            );
+        }
+        Self { models }
+    }
+}
+
+impl Scorer for EnsembledScorer {
+    fn score(&self, head: usize, relation: usize, tail: usize) -> f32 {
+        let sum: f32 = self
+            .models
+            .iter()
+            .map(|m| m.score(head, relation, tail))
+            .sum();
+        sum / self.models.len() as f32
+    }
+
+    fn num_entities(&self) -> usize {
+        self.models[0].num_entities()
+    }
+
+    fn score_all_tails(&self, head: usize, relation: usize) -> Vec<f32> {
+        let n = self.num_entities();
+        let k = self.models.len() as f32;
+        let mut avg = vec![0.0_f32; n];
+        for m in &self.models {
+            let scores = m.score_all_tails(head, relation);
+            for (i, &s) in scores.iter().enumerate() {
+                avg[i] += s;
+            }
+        }
+        for v in &mut avg {
+            *v /= k;
+        }
+        avg
+    }
+
+    fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
+        let n = self.num_entities();
+        let k = self.models.len() as f32;
+        let mut avg = vec![0.0_f32; n];
+        for m in &self.models {
+            let scores = m.score_all_heads(relation, tail);
+            for (i, &s) in scores.iter().enumerate() {
+                avg[i] += s;
+            }
+        }
+        for v in &mut avg {
+            *v /= k;
+        }
+        avg
+    }
 }
 
 #[cfg(test)]
