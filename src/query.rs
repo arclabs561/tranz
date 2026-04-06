@@ -59,8 +59,16 @@ pub enum TNorm {
 /// Configuration for query answering.
 #[derive(Debug, Clone)]
 pub struct QueryConfig {
-    /// T-norm for conjunction. Default: [`TNorm::Min`].
-    pub t_norm: TNorm,
+    /// T-norm for chain projection (hop) operations. Default: [`TNorm::Product`].
+    ///
+    /// Product tends to work better for chains (2p, 3p) because it
+    /// propagates score magnitude through hops.
+    pub t_norm_projection: TNorm,
+    /// T-norm for intersection (AND) operations. Default: [`TNorm::Min`].
+    ///
+    /// Min tends to work better for intersections (2i, 3i) because it
+    /// selects the weakest evidence.
+    pub t_norm_intersection: TNorm,
     /// Beam width for intermediate variable search. Default: 128.
     ///
     /// Higher values improve recall at the cost of `O(k * |E|)` per hop.
@@ -70,7 +78,8 @@ pub struct QueryConfig {
 impl Default for QueryConfig {
     fn default() -> Self {
         Self {
-            t_norm: TNorm::Min,
+            t_norm_projection: TNorm::Product,
+            t_norm_intersection: TNorm::Min,
             beam_k: 128,
         }
     }
@@ -183,14 +192,14 @@ fn eval_query(model: &dyn Scorer, query: &Query, config: &QueryConfig, n: usize)
                 .iter()
                 .map(|b| eval_query(model, b, config, n))
                 .collect();
-            combine_conjunction(&branch_scores, config.t_norm, n)
+            combine_conjunction(&branch_scores, config.t_norm_intersection, n)
         }
         Query::Union { branches } => {
             let branch_scores: Vec<Vec<f32>> = branches
                 .iter()
                 .map(|b| eval_query(model, b, config, n))
                 .collect();
-            combine_disjunction(&branch_scores, config.t_norm, n)
+            combine_disjunction(&branch_scores, config.t_norm_intersection, n)
         }
         Query::Negation { inner } => {
             let scores = eval_query(model, inner, config, n);
@@ -204,6 +213,10 @@ fn eval_query(model: &dyn Scorer, query: &Query, config: &QueryConfig, n: usize)
 /// Takes the top-k intermediate entities from `inner_scores`, scores all
 /// tails through `relation` for each, combines inner and tail scores with
 /// the t-norm, and returns the max over all beam candidates per target.
+///
+/// For `TNorm::Min`, sigmoid is deferred: raw scores are compared directly
+/// (negated, since lower raw = better) and sigmoid is applied once per
+/// entity at the end. This reduces sigmoid calls from `beam_k * N` to `N`.
 fn beam_project(
     model: &dyn Scorer,
     inner_scores: &[f32],
@@ -212,19 +225,51 @@ fn beam_project(
     n: usize,
 ) -> Vec<f32> {
     let candidates = top_k_descending(inner_scores, config.beam_k);
+    let norm = config.t_norm_projection;
 
-    let mut result = vec![0.0_f32; n];
-    for &(entity, inner_score) in &candidates {
-        let raw_tail_scores = model.score_all_tails(entity, relation);
-        for (t, &raw) in raw_tail_scores.iter().enumerate() {
-            let tail_prob = sigmoid(-raw);
-            let combined = apply_t_norm(inner_score, tail_prob, config.t_norm);
-            if combined > result[t] {
-                result[t] = combined;
+    match norm {
+        TNorm::Min => {
+            // Deferred sigmoid: min(sigmoid(a), sigmoid(b)) = sigmoid(min(a, b))
+            // since sigmoid is monotone. Work in raw-score space (negated: higher = better).
+            let mut best_raw = vec![f32::NEG_INFINITY; n];
+            for &(entity, inner_score) in &candidates {
+                // Convert inner_score back to raw: sigmoid(-raw) = inner_score → raw = -logit(inner_score)
+                // But we can just compare min(inner_raw, tail_raw) where raw = -logit(prob).
+                // Since sigmoid is monotone, min(prob_a, prob_b) = sigmoid(min(raw_a, raw_b))
+                // where raw = -score (negated scorer output). So inner_raw = logit(inner_score).
+                let inner_raw = logit(inner_score);
+                let raw_tail_scores = model.score_all_tails(entity, relation);
+                for (t, &raw) in raw_tail_scores.iter().enumerate() {
+                    let tail_raw = -raw; // negate: higher = better
+                    let combined_raw = inner_raw.min(tail_raw);
+                    if combined_raw > best_raw[t] {
+                        best_raw[t] = combined_raw;
+                    }
+                }
             }
+            // Apply sigmoid once per entity.
+            best_raw.iter().map(|&r| sigmoid(r)).collect()
+        }
+        TNorm::Product => {
+            let mut result = vec![0.0_f32; n];
+            for &(entity, inner_score) in &candidates {
+                let raw_tail_scores = model.score_all_tails(entity, relation);
+                for (t, &raw) in raw_tail_scores.iter().enumerate() {
+                    let tail_prob = sigmoid(-raw);
+                    let combined = inner_score * tail_prob;
+                    if combined > result[t] {
+                        result[t] = combined;
+                    }
+                }
+            }
+            result
         }
     }
-    result
+}
+
+/// Inverse of sigmoid: `ln(p / (1 - p))`.
+fn logit(p: f32) -> f32 {
+    (p / (1.0 - p)).ln()
 }
 
 /// Convert raw Scorer outputs (lower=better) to `[0, 1]` (higher=better).
@@ -328,7 +373,8 @@ mod tests {
     fn chain_2p_finds_two_hop_answer() {
         let model = ChainModel { n: 20 };
         let config = QueryConfig {
-            t_norm: TNorm::Product,
+            t_norm_projection: TNorm::Product,
+            t_norm_intersection: TNorm::Min,
             beam_k: 20, // full beam for small model
         };
         // 2p: entity 0 -rel 0-> V -rel 2-> ?
@@ -359,7 +405,7 @@ mod tests {
     fn union_at_least_as_good_as_branches() {
         let model = ChainModel { n: 10 };
         let config = QueryConfig {
-            t_norm: TNorm::Product,
+            t_norm_intersection: TNorm::Product,
             ..QueryConfig::default()
         };
 
@@ -418,7 +464,8 @@ mod tests {
     fn pi_query_intersect_then_project() {
         let model = ChainModel { n: 20 };
         let config = QueryConfig {
-            t_norm: TNorm::Min,
+            t_norm_projection: TNorm::Min,
+            t_norm_intersection: TNorm::Min,
             beam_k: 20,
         };
         // pi: (entity 0 -rel 4-> V) AND (entity 2 -rel 2-> V), then V -rel 0-> ?
