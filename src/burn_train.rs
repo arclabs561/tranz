@@ -240,14 +240,7 @@ pub fn train_complex<B: AutodiffBackend>(
             let head_log_probs = activation::log_softmax(head_scores, 1);
 
             // 1vsAll CE: gather the correct entity's log-prob.
-            let tail_ids = Tensor::<B, 1, Int>::from_data(
-                burn::tensor::TensorData::new(
-                    tails_data.iter().map(|&t| t as i32).collect::<Vec<i32>>(),
-                    [actual_bs],
-                ),
-                device,
-            )
-            .unsqueeze_dim(1); // [bs, 1]
+            let tail_ids = tails.clone().unsqueeze_dim(1); // [bs, 1]
             let t_nll = tail_log_probs
                 .clone()
                 .gather(1, tail_ids)
@@ -255,17 +248,7 @@ pub fn train_complex<B: AutodiffBackend>(
                 .neg()
                 .mean();
 
-            let head_ids = Tensor::<B, 1, Int>::from_data(
-                burn::tensor::TensorData::new(
-                    batch_idx
-                        .iter()
-                        .map(|&i| train_triples[i].head as i32)
-                        .collect::<Vec<i32>>(),
-                    [actual_bs],
-                ),
-                device,
-            )
-            .unsqueeze_dim(1);
+            let head_ids = heads.clone().unsqueeze_dim(1); // [bs, 1]
             let h_nll = head_log_probs
                 .clone()
                 .gather(1, head_ids)
@@ -284,10 +267,10 @@ pub fn train_complex<B: AutodiffBackend>(
                 nll
             };
 
-            let loss_val: f32 = loss.clone().into_scalar().to_f32();
+            let grads = GradientsParams::from_grads(loss.clone().backward(), &current);
+            let loss_val: f32 = loss.into_scalar().to_f32();
 
             if loss_val.is_finite() {
-                let grads = GradientsParams::from_grads(loss.backward(), &current);
                 model = optim.step(config.lr, current, grads);
             }
 
