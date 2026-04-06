@@ -1,1 +1,2 @@
 timestamp	model	dataset	epochs	dim	lr	optimizer	1n	recip	n3	l2	swa	rel_pred	mrr	h@1	h@3	h@10	head_mrr	tail_mrr	train_s	commit	command	notes
+2026-04-06T09:00	complex	WN18RR	10	50	0.001	adamw	yes	yes	0	0	0	0	0.3964	0.3653	0.4126	0.4505	-	-	2615	4136898	tranz train --data data/WN18RR/ --model complex --dim 50 --1n --label-smoothing 0.1 --reciprocals --epochs 10 --lr 0.001 --log-interval 5 --eval --output /tmp/tranz-quick	quick validation (dim=50, 10ep)
