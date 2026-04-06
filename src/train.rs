@@ -1796,4 +1796,79 @@ mod tests {
             "DistMult should achieve MRR > 0.3 on trivial graph, got {mrr:.4}"
         );
     }
+
+    #[test]
+    fn swa_produces_averaged_embeddings() {
+        let device = Device::Cpu;
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0)];
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            dim: 8,
+            one_to_n: true,
+            batch_size: 3,
+            epochs: 10,
+            swa_start_epoch: 5,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 3, 2, &config, &device).unwrap();
+        assert!(
+            result.swa_entity_vecs.is_some(),
+            "SWA should produce entity vecs"
+        );
+        assert!(
+            result.swa_relation_vecs.is_some(),
+            "SWA should produce relation vecs"
+        );
+        let swa_ent = result.swa_entity_vecs.unwrap();
+        assert_eq!(swa_ent.len(), 3);
+        assert_eq!(swa_ent[0].len(), 8);
+        // SWA vecs should differ from the final model vecs.
+        let final_ent = result.model.entity_vecs().unwrap();
+        let differs = swa_ent
+            .iter()
+            .zip(final_ent.iter())
+            .any(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| (x - y).abs() > 1e-8));
+        assert!(differs, "SWA average should differ from final model");
+    }
+
+    #[test]
+    fn swa_disabled_returns_none() {
+        let device = Device::Cpu;
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2)];
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            dim: 4,
+            one_to_n: true,
+            batch_size: 2,
+            epochs: 5,
+            swa_start_epoch: 0, // disabled
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 3, 1, &config, &device).unwrap();
+        assert!(result.swa_entity_vecs.is_none());
+        assert!(result.swa_relation_vecs.is_none());
+    }
+
+    #[test]
+    fn relation_prediction_loss_smoke() {
+        let device = Device::Cpu;
+        let triples = vec![tid(0, 0, 1), tid(1, 1, 2), tid(2, 0, 0), tid(0, 1, 2)];
+        let config = TrainConfig {
+            model_type: ModelType::DistMult,
+            dim: 8,
+            one_to_n: true,
+            relation_prediction_weight: 0.1,
+            batch_size: 4,
+            epochs: 10,
+            ..TrainConfig::default()
+        };
+        let result = train(&triples, 3, 2, &config, &device).unwrap();
+        assert!(result.losses.iter().all(|l| l.is_finite()));
+        let first = result.losses[0];
+        let last = *result.losses.last().unwrap();
+        assert!(
+            last < first,
+            "Loss with relation prediction should decrease: {first} -> {last}"
+        );
+    }
 }

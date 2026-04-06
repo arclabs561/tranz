@@ -209,6 +209,86 @@ fn mrr(ranks: &[u32]) -> f32 {
     (ranks.iter().map(|&r| 1.0 / r as f64).sum::<f64>() / n) as f32
 }
 
+/// Fast approximate evaluation using random negative sampling.
+///
+/// Instead of scoring all `num_entities` candidates per test triple, samples
+/// `num_candidates` random negatives plus the correct answer. Ranks are
+/// computed within this smaller candidate set.
+///
+/// Provides an unbiased estimate of ranking metrics when `num_candidates` is
+/// large enough (500-1000 is typical). Runs `num_entities / num_candidates`
+/// times faster than exact evaluation.
+///
+/// Based on Cornell et al. (2024), "A Fast and Scalable Method for Evaluation
+/// of KGE Models."
+pub fn evaluate_link_prediction_sampled(
+    model: &(dyn Scorer + Sync),
+    test_triples: &[TripleIds],
+    filter: &FilterIndex,
+    num_entities: usize,
+    num_candidates: usize,
+) -> Metrics {
+    if test_triples.is_empty() {
+        return Metrics::default();
+    }
+
+    let triple_ranks: Vec<(u32, u32)> = test_triples
+        .par_iter()
+        .map_init(rand::rng, |rng, triple| {
+            use rand::seq::index::sample;
+            let (h, r, t) = (triple.head, triple.relation, triple.tail);
+
+            // Tail prediction: sample candidates + correct answer.
+            let tail_rank = {
+                let target_score = model.score(h, r, t);
+                let known_tails = filter.known_tails(h, r);
+                let candidates = sample(rng, num_entities, num_candidates.min(num_entities));
+                let mut rank = 1u32;
+                for idx in candidates.iter() {
+                    if idx == t || known_tails.contains(&idx) {
+                        continue;
+                    }
+                    if model.score(h, r, idx) < target_score {
+                        rank += 1;
+                    }
+                }
+                rank
+            };
+
+            // Head prediction: sample candidates + correct answer.
+            let head_rank = {
+                let target_score = model.score(h, r, t);
+                let known_heads = filter.known_heads(r, t);
+                let candidates = sample(rng, num_entities, num_candidates.min(num_entities));
+                let mut rank = 1u32;
+                for idx in candidates.iter() {
+                    if idx == h || known_heads.contains(&idx) {
+                        continue;
+                    }
+                    if model.score(idx, r, t) < target_score {
+                        rank += 1;
+                    }
+                }
+                rank
+            };
+
+            (tail_rank, head_rank)
+        })
+        .collect();
+
+    let tail_ranks: Vec<u32> = triple_ranks.iter().map(|&(tr, _)| tr).collect();
+    let head_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, hr)| hr).collect();
+    let all_ranks: Vec<u32> = tail_ranks
+        .iter()
+        .chain(head_ranks.iter())
+        .copied()
+        .collect();
+    let mut metrics = compute_metrics(&all_ranks);
+    metrics.tail_mrr = mrr(&tail_ranks);
+    metrics.head_mrr = mrr(&head_ranks);
+    metrics
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +430,36 @@ mod tests {
             "Relation 0 MRR ({}) should be >= Relation 1 MRR ({})",
             r0.mrr,
             r1.mrr
+        );
+    }
+
+    #[test]
+    fn sampled_eval_perfect_model() {
+        let test = vec![tid(0, 0, 0)];
+        let filter = make_filter(&test);
+        let metrics = evaluate_link_prediction_sampled(&PerfectModel, &test, &filter, 5, 100);
+        // PerfectModel scores self-loops as 0 (best). With 5 entities and
+        // 100 candidate samples (capped to 5), correct answer is always rank 1.
+        assert!(
+            (metrics.mrr - 1.0).abs() < 1e-6,
+            "Sampled eval MRR = {}",
+            metrics.mrr
+        );
+    }
+
+    #[test]
+    fn head_tail_mrr_split() {
+        let test = vec![tid(0, 0, 0)];
+        let filter = make_filter(&test);
+        let metrics = evaluate_link_prediction(&PerfectModel, &test, &filter, 5);
+        assert!(metrics.head_mrr > 0.0, "head_mrr should be populated");
+        assert!(metrics.tail_mrr > 0.0, "tail_mrr should be populated");
+        assert!(
+            (metrics.mrr - (metrics.head_mrr + metrics.tail_mrr) / 2.0).abs() < 1e-5,
+            "mrr should be average of head and tail: {} vs ({} + {}) / 2",
+            metrics.mrr,
+            metrics.head_mrr,
+            metrics.tail_mrr
         );
     }
 }

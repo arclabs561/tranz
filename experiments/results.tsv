@@ -1,0 +1,1 @@
+timestamp	model	dataset	epochs	dim	lr	optimizer	1n	recip	n3	l2	swa	rel_pred	mrr	h@1	h@3	h@10	head_mrr	tail_mrr	train_s	commit	notes
