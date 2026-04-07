@@ -52,6 +52,10 @@ required-features = ["candle"]
 name = "bench_burn"
 required-features = ["candle", "burn-cpu"]
 
+[[example]]
+name = "bench_wgpu"
+required-features = ["burn-gpu"]
+
 [dev-dependencies]
 proptest = "1.5"
 tempfile = "3"

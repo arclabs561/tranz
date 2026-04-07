@@ -175,7 +175,10 @@ pub fn train_complex<B: AutodiffBackend>(
         config.init_scale,
         device,
     );
-    let mut optim = AdamWConfig::new().init::<B, BurnComplEx<B>>();
+    let mut optim = AdamWConfig::new()
+        .with_epsilon(1e-8)
+        .with_weight_decay(0.0)
+        .init::<B, BurnComplEx<B>>();
 
     let n_triples = train_triples.len();
     let batch_size = config.batch_size.min(n_triples);
@@ -267,8 +270,10 @@ pub fn train_complex<B: AutodiffBackend>(
                 nll
             };
 
-            let grads = GradientsParams::from_grads(loss.clone().backward(), &current);
-            let loss_val: f32 = loss.into_scalar().to_f32();
+            // Extract loss value from inner (non-autodiff) tensor to avoid
+            // consuming the computation graph before backward().
+            let loss_val: f32 = loss.clone().inner().into_scalar().to_f32();
+            let grads = GradientsParams::from_grads(loss.backward(), &current);
 
             if loss_val.is_finite() {
                 model = optim.step(config.lr, current, grads);
