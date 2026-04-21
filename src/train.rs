@@ -698,6 +698,7 @@ pub struct ValidationData<'a> {
 ///
 /// Implements: linear warmup, then either constant LR or cyclic cosine
 /// annealing (SnapE). Returns `config.lr` when no schedule is active.
+#[allow(clippy::manual_checked_ops)]
 pub fn learning_rate(epoch: usize, config: &TrainConfig) -> f64 {
     let base_lr = config.lr;
     if config.warmup_epochs > 0 && epoch < config.warmup_epochs {
@@ -747,6 +748,7 @@ pub fn train(
 }
 
 /// Train with optional validation-based early stopping.
+#[allow(clippy::manual_checked_ops)]
 pub fn train_with_validation(
     train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,

@@ -25,9 +25,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
         if: matrix.lint
-      - run: cargo clippy --all-targets
+      - run: cargo clippy --all-targets -- -D warnings
         if: matrix.lint
-      - run: cargo clippy --features candle --all-targets
+      - run: cargo clippy --all-targets --features candle -- -D warnings
+        if: matrix.lint
+      - run: cargo clippy --all-targets --features "candle,burn-cpu,burn-gpu,rand" -- -D warnings
         if: matrix.lint
       - run: cargo test
       - run: cargo test --features candle
