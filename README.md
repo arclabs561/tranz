@@ -1,6 +1,6 @@
 # tranz
 
-Point-embedding knowledge graph models in Rust: TransE, RotatE, ComplEx,
+Point-embedding knowledge graph models: TransE, RotatE, ComplEx,
 and DistMult. GPU training via candle.
 
 ```toml
