@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Deprecated
+
+- `candle` feature is deprecated and will be removed in 0.6.0 (next major). Burn upstream deprecated `burn-candle` (PR tracel-ai/burn#4416), so the dual-framework pattern no longer composes cleanly. Migrate to `burn-cpu` (CPU) or `burn-gpu` (Wgpu cross-platform GPU). For NVIDIA-specific deployments, a `burn-cuda` feature is on the roadmap.
+
 ## 0.4.0 (2026-03-26)
 
 - Adagrad optimizer (proven for KGE by Lacroix et al. 2018)
