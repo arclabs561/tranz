@@ -3,3 +3,4 @@ data/
 flamegraph.svg
 cargo-flamegraph.trace
 Cargo.lock
+/semver-checks/
