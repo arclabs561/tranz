@@ -37,6 +37,7 @@ burn-gpu = ["dep:burn", "dep:burn-wgpu", "rand"]
 
 [[bin]]
 name = "tranz"
+test = false
 path = "src/bin/tranz.rs"
 required-features = ["candle"]
 
