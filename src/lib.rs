@@ -136,6 +136,7 @@ pub trait Scorer: Sync {
 ///
 /// Reference: Bordes et al. (2013), "Translating Embeddings for Modeling
 /// Multi-relational Data."
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransE {
     /// Flat entity embeddings: `[num_entities * dim]` row-major.
     entities: Vec<f32>,
@@ -342,6 +343,7 @@ impl Scorer for TransE {
 ///
 /// Reference: Sun et al. (2019), "RotatE: Knowledge Graph Embedding by
 /// Relational Rotation in Complex Space."
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RotatE {
     /// Flat entity embeddings: `[num_entities * dim * 2]` row-major, re then im per entity.
     entities: Vec<f32>,
@@ -549,6 +551,7 @@ impl Scorer for RotatE {
 ///
 /// Reference: Trouillon et al. (2016), "Complex Embeddings for Simple Link
 /// Prediction."
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ComplEx {
     /// Flat entity embeddings: `[num_entities * dim * 2]` row-major.
     entities: Vec<f32>,
@@ -732,6 +735,7 @@ impl Scorer for ComplEx {
 ///
 /// Reference: Yang et al. (2015), "Embedding Entities and Relations for
 /// Learning and Inference in Knowledge Bases."
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DistMult {
     /// Flat entity embeddings: `[num_entities * dim]` row-major.
     entities: Vec<f32>,
