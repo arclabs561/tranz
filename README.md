@@ -180,6 +180,14 @@ let config = TrainConfig {
 let result = train(&triples, num_entities, num_relations, &config, &device).unwrap();
 ```
 
+## Examples
+
+Runnable examples live in [`examples/`](examples/):
+
+- `train_wn18rr` trains a KGE model on WN18RR and evaluates filtered link prediction, the full benchmark reproduction.
+- `score` scores triples from saved embeddings with no candle dependency, the smallest way to use a trained model.
+- `bench_training` / `bench_scoring` measure epoch cost and scoring hot paths; `bench_burn` / `bench_wgpu` / `bench_f32_vs_f64` compare backends (burn vs candle), devices (WGPU/Metal vs CPU), and accumulation precision.
+
 ## Companion to subsume
 
 [subsume](https://crates.io/crates/subsume) embeds entities as geometric regions (boxes, cones) where containment encodes subsumption. tranz embeds entities as points where distance/similarity encodes relational facts.
