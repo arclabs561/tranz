@@ -8,8 +8,8 @@
 //!
 //! Data-gated: exits 0 if `data/WN18RR` is absent.
 //!
-//! Run on Metal: `cargo run --release --features "burn-cpu,burn-gpu" --example wn18rr_vicinity`
-//! (drop `burn-gpu` for CPU ndarray).
+//! Run on Metal: `cargo run --release --features "burn-ndarray,burn-wgpu" --example wn18rr_vicinity`
+//! (drop `burn-wgpu` for CPU ndarray).
 //!
 //! Sample output:
 //! ```text
@@ -29,10 +29,10 @@ use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
 use tranz::dataset::{self, InternedDatasetExt};
 use vicinity::hnsw::HNSWIndex;
 
-// Metal/Vulkan via wgpu when `burn-gpu` is enabled, else CPU ndarray.
-#[cfg(feature = "burn-gpu")]
+// Metal/Vulkan via wgpu when `burn-wgpu` is enabled, else CPU ndarray.
+#[cfg(feature = "burn-wgpu")]
 type B = burn::backend::Autodiff<burn_wgpu::Wgpu>;
-#[cfg(not(feature = "burn-gpu"))]
+#[cfg(not(feature = "burn-wgpu"))]
 type B = burn::backend::Autodiff<burn_ndarray::NdArray>;
 
 fn normalize(v: &[f32]) -> Vec<f32> {
@@ -115,11 +115,11 @@ fn main() -> vicinity::Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "burn-gpu")]
+#[cfg(feature = "burn-wgpu")]
 fn device_default() -> <B as burn::tensor::backend::Backend>::Device {
     burn_wgpu::WgpuDevice::default()
 }
-#[cfg(not(feature = "burn-gpu"))]
+#[cfg(not(feature = "burn-wgpu"))]
 fn device_default() -> <B as burn::tensor::backend::Backend>::Device {
     burn_ndarray::NdArrayDevice::Cpu
 }

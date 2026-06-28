@@ -21,7 +21,7 @@
 
 #![warn(missing_docs)]
 
-#[cfg(any(feature = "burn-cpu", feature = "burn-gpu"))]
+#[cfg(any(feature = "burn-ndarray", feature = "burn-wgpu"))]
 pub mod burn_train;
 pub mod dataset;
 pub mod eval;

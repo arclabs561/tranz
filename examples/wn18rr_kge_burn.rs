@@ -9,12 +9,12 @@
 //! in CI that compiles or runs examples.
 //!
 //! Cost: trains all four models on full WN18RR (40943 entities, 173670
-//! triples). On Metal (`--features burn-cpu,burn-gpu`) ~30-60s per model
+//! triples). On Metal (`--features burn-ndarray,burn-wgpu`) ~30-60s per model
 //! (~3 min total); on CPU ndarray it is minutes per model. Shrink for a quick
 //! smoke run with `TRAIN_CAP=20000 DIM=32 EPOCHS=5`.
 //!
-//! Run on Metal: `cargo run --release --features "burn-cpu,burn-gpu" --example wn18rr_kge_burn`
-//! (drop `burn-gpu` for CPU ndarray).
+//! Run on Metal: `cargo run --release --features "burn-ndarray,burn-wgpu" --example wn18rr_kge_burn`
+//! (drop `burn-wgpu` for CPU ndarray).
 //!
 //! Sample output (Metal, dim 50, 3 epochs, sampled eval over 200 candidates):
 //! ```text
@@ -35,11 +35,11 @@ use std::time::Instant;
 use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
 use tranz::dataset::{self, FilterIndex, InternedDatasetExt};
 
-// Backend: Metal/Vulkan via wgpu when `burn-gpu` is enabled, else CPU ndarray.
-// Run on Metal with: `--features "burn-cpu,burn-gpu"`.
-#[cfg(feature = "burn-gpu")]
+// Backend: Metal/Vulkan via wgpu when `burn-wgpu` is enabled, else CPU ndarray.
+// Run on Metal with: `--features "burn-ndarray,burn-wgpu"`.
+#[cfg(feature = "burn-wgpu")]
 type B = burn::backend::Autodiff<burn_wgpu::Wgpu>;
-#[cfg(not(feature = "burn-gpu"))]
+#[cfg(not(feature = "burn-wgpu"))]
 type B = burn::backend::Autodiff<burn_ndarray::NdArray>;
 
 fn main() {
@@ -68,13 +68,13 @@ fn main() {
         interned.test.len()
     );
     let filter = FilterIndex::from_dataset(&interned);
-    #[cfg(feature = "burn-gpu")]
+    #[cfg(feature = "burn-wgpu")]
     let device = burn_wgpu::WgpuDevice::default();
-    #[cfg(not(feature = "burn-gpu"))]
+    #[cfg(not(feature = "burn-wgpu"))]
     let device = burn_ndarray::NdArrayDevice::Cpu;
-    #[cfg(feature = "burn-gpu")]
+    #[cfg(feature = "burn-wgpu")]
     eprintln!("backend: wgpu (Metal/Vulkan)");
-    #[cfg(not(feature = "burn-gpu"))]
+    #[cfg(not(feature = "burn-wgpu"))]
     eprintln!("backend: ndarray (CPU)");
 
     // Fast-but-real config: enough to show learning on real data, not SOTA

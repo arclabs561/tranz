@@ -4,7 +4,7 @@
 //! CPU (ndarray + rayon) and GPU (WGPU/Metal/Vulkan) backends via
 //! burn's backend system.
 //!
-//! Enable with `burn-cpu` (ndarray) or `burn-gpu` (WGPU) feature.
+//! Enable with `burn-ndarray` (ndarray) or `burn-wgpu` (WGPU) feature.
 //!
 //! Two entry points: [`train_complex`] (ComplEx-specific, kept for the bench
 //! examples) and [`train_kge`], generic over all four models (TransE, RotatE,
@@ -611,16 +611,16 @@ mod tests {
         TripleIds::new(h, r, t)
     }
 
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     type TestBackend = burn::backend::Autodiff<burn_ndarray::NdArray>;
 
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn test_device() -> <TestBackend as Backend>::Device {
         burn_ndarray::NdArrayDevice::Cpu
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_complex_smoke() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0), tid(0, 1, 2)];
         let config = BurnTrainConfig {
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_complex_loss_decreases() {
         let triples: Vec<_> = (0..20).map(|i| tid(i % 5, i % 2, (i + 1) % 5)).collect();
         let config = BurnTrainConfig {
@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_complex_achieves_nonzero_mrr() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)];
         let config = BurnTrainConfig {
@@ -694,7 +694,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn kge_loss_decreases(mt: BurnModelType) {
         let triples: Vec<_> = (0..20).map(|i| tid(i % 5, i % 2, (i + 1) % 5)).collect();
         let config = BurnTrainConfig {
@@ -718,25 +718,25 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_transe_loss_decreases() {
         kge_loss_decreases(BurnModelType::TransE);
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_distmult_loss_decreases() {
         kge_loss_decreases(BurnModelType::DistMult);
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_rotate_loss_decreases() {
         kge_loss_decreases(BurnModelType::RotatE);
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_distmult_achieves_nonzero_mrr() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)];
         let config = BurnTrainConfig {
@@ -784,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-cpu")]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_kge_to_scorer_builds_all_models() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2)];
         let config = BurnTrainConfig {

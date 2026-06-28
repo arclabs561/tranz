@@ -1,6 +1,6 @@
 //! Benchmark burn WGPU (Metal) vs CPU training.
 //!
-//! Run with: `cargo run --release --features burn-gpu --example bench_wgpu`
+//! Run with: `cargo run --release --features burn-wgpu --example bench_wgpu`
 #![allow(missing_docs)]
 use std::time::Instant;
 use tranz::burn_train::{train_complex, BurnTrainConfig};

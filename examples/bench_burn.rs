@@ -1,6 +1,6 @@
 //! Benchmark burn vs candle training on a small dataset.
 //!
-//! Run with: `cargo run --release --features "candle,burn-cpu" --example bench_burn`
+//! Run with: `cargo run --release --features "candle,burn-ndarray" --example bench_burn`
 #![allow(missing_docs)]
 use std::time::Instant;
 use tranz::dataset::{self, InternedDatasetExt};

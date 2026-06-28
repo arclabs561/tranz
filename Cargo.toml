@@ -33,8 +33,8 @@ burn-wgpu = { version = "0.20", optional = true }
 default = ["rand"]
 candle = ["dep:candle-core", "dep:candle-nn", "rand"]
 cuda = ["candle", "candle-core/cuda"]
-burn-cpu = ["dep:burn", "dep:burn-ndarray", "rand"]
-burn-gpu = ["dep:burn", "dep:burn-wgpu", "rand"]
+burn-ndarray = ["dep:burn", "dep:burn-ndarray", "rand"]
+burn-wgpu = ["dep:burn", "dep:burn-wgpu", "rand"]
 # Optional serde derives on the model structs (persist/snapshot trained embeddings).
 serde = ["dep:serde"]
 
@@ -50,11 +50,11 @@ required-features = ["candle"]
 
 [[example]]
 name = "wn18rr_kge_burn"
-required-features = ["burn-cpu"]
+required-features = ["burn-ndarray"]
 
 [[example]]
 name = "wn18rr_vicinity"
-required-features = ["burn-cpu"]
+required-features = ["burn-ndarray"]
 
 [[example]]
 name = "bench_training"
@@ -62,11 +62,11 @@ required-features = ["candle"]
 
 [[example]]
 name = "bench_burn"
-required-features = ["candle", "burn-cpu"]
+required-features = ["candle", "burn-ndarray"]
 
 [[example]]
 name = "bench_wgpu"
-required-features = ["burn-gpu"]
+required-features = ["burn-wgpu"]
 
 [dev-dependencies]
 proptest = "1.5"
