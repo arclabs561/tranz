@@ -523,7 +523,10 @@ pub fn train_kge<B: AutodiffBackend>(
             use rand::seq::SliceRandom;
             indices.shuffle(&mut rand::rng());
         }
-        let mut epoch_loss = 0.0_f64;
+        // Accumulate the detached loss on-device and read it once per epoch.
+        // Reading the loss every batch (into_scalar) forces a CPU<->GPU sync that
+        // stalls the pipeline -- the dominant per-batch cost on wgpu/Metal.
+        let mut epoch_loss_acc: Option<Tensor<<B as AutodiffBackend>::InnerBackend, 1>> = None;
         let mut n_batches = 0u32;
         let mut offset = 0;
         while offset < n_triples {
@@ -577,15 +580,20 @@ pub fn train_kge<B: AutodiffBackend>(
                 nll
             };
 
-            let loss_val: f32 = loss.clone().inner().into_scalar().to_f32();
+            let loss_inner = loss.clone().inner();
             let grads = GradientsParams::from_grads(loss.backward(), &current);
-            if loss_val.is_finite() {
-                model = optim.step(config.lr, current, grads);
-            }
-            epoch_loss += loss_val as f64;
+            model = optim.step(config.lr, current, grads);
+            epoch_loss_acc = Some(match epoch_loss_acc {
+                Some(acc) => acc + loss_inner,
+                None => loss_inner,
+            });
             n_batches += 1;
         }
-        losses.push((epoch_loss / n_batches.max(1) as f64) as f32);
+        let avg = match epoch_loss_acc {
+            Some(acc) => acc.into_scalar().to_f32() / n_batches.max(1) as f32,
+            None => 0.0,
+        };
+        losses.push(avg);
     }
 
     let extract = |p: &Param<Tensor<B, 2>>, cols: usize| -> Vec<Vec<f32>> {
