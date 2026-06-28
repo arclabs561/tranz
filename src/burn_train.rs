@@ -1,8 +1,7 @@
 //! Burn-based training for KGE models.
 //!
-//! Alternative to the candle-based [`crate::train`] module. Supports
-//! CPU (ndarray + rayon) and GPU (WGPU/Metal/Vulkan) backends via
-//! burn's backend system.
+//! Trains all four point-embedding models on CPU (ndarray + rayon) or GPU
+//! (WGPU/Metal/Vulkan) backends via burn's backend system.
 //!
 //! Enable with `burn-ndarray` (ndarray) or `burn-wgpu` (WGPU) feature.
 //!
@@ -327,8 +326,8 @@ pub fn train_complex<B: AutodiffBackend>(
 
 /// KGE model family for the generic burn trainer.
 ///
-/// Mirrors the candle `crate::train::ModelType` scoring, but is defined here so
-/// the burn path does not depend on the candle-gated `train` module.
+/// Selects the scoring function used by [`train_kge`] and the CPU scorer built
+/// by [`BurnKgeResult::to_scorer`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BurnModelType {
     /// `-||h + r - t||^2` (translation, Bordes et al. 2013).

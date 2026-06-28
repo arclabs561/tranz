@@ -1,6 +1,6 @@
 # Contributing to tranz
 
-Thanks for your interest. tranz is point-embedding knowledge graph models: TransE, RotatE, ComplEx, DistMult. GPU training via candle.
+Thanks for your interest. tranz is point-embedding knowledge graph models: TransE, RotatE, ComplEx, DistMult. GPU training via Burn (wgpu/Metal).
 
 ## Before you start
 
@@ -8,7 +8,7 @@ For non-trivial work (new APIs, features, large refactors), open an issue first 
 
 ## Setup
 
-- Rust toolchain: stable, MSRV `1.87`. Use `rustup` to manage.
+- Rust toolchain: stable, MSRV `1.89`. Use `rustup` to manage.
 - Optional: `cargo-nextest` for faster test runs (`cargo install cargo-nextest`).
 
 ```

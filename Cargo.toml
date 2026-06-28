@@ -1,25 +1,23 @@
 [package]
 name = "tranz"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 authors = ["Arc <attobop@gmail.com>"]
 repository = "https://github.com/arclabs561/tranz"
-description = "Point-embedding knowledge graph models: TransE, RotatE, ComplEx, DistMult. GPU training via candle."
+description = "Point-embedding knowledge graph models: TransE, RotatE, ComplEx, DistMult. GPU training via Burn (wgpu/Metal)."
 keywords = ["knowledge-graph", "embeddings", "link-prediction"]
 categories = ["science", "algorithms"]
 readme = "README.md"
 publish = true
 
 [package.metadata.docs.rs]
-features = ["candle"]
+features = ["burn-ndarray"]
 
 [workspace]
 
 [dependencies]
-candle-core = { version = "0.9", optional = true }
-candle-nn = { version = "0.9", optional = true }
 rand = { version = "0.9", optional = true }
 lattix = { version = "0.6", default-features = false, features = ["kge"] }
 rayon = "1"
@@ -31,8 +29,6 @@ burn-wgpu = { version = "0.20", optional = true }
 
 [features]
 default = ["rand"]
-candle = ["dep:candle-core", "dep:candle-nn", "rand"]
-cuda = ["candle", "candle-core/cuda"]
 burn-ndarray = ["dep:burn", "dep:burn-ndarray", "rand"]
 burn-wgpu = ["dep:burn", "dep:burn-wgpu", "rand"]
 # Optional serde derives on the model structs (persist/snapshot trained embeddings).
@@ -42,11 +38,7 @@ serde = ["dep:serde"]
 name = "tranz"
 test = false
 path = "src/bin/tranz.rs"
-required-features = ["candle"]
-
-[[example]]
-name = "train_wn18rr"
-required-features = ["candle"]
+required-features = ["burn-ndarray"]
 
 [[example]]
 name = "wn18rr_kge_burn"
@@ -55,14 +47,6 @@ required-features = ["burn-ndarray"]
 [[example]]
 name = "wn18rr_vicinity"
 required-features = ["burn-ndarray"]
-
-[[example]]
-name = "bench_training"
-required-features = ["candle"]
-
-[[example]]
-name = "bench_burn"
-required-features = ["candle", "burn-ndarray"]
 
 [[example]]
 name = "bench_wgpu"

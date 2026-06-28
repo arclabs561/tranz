@@ -9,7 +9,7 @@ add `burn-wgpu` to run on Metal/Vulkan (`--features "burn-ndarray,burn-wgpu"`).
 The feature names follow Burn's own convention (named after the backend, not the
 device class).
 
-## Burn (the current training path)
+## Training (Burn backend)
 
 ### `wn18rr_kge_burn` — do the four Burn KGE models actually learn on real data?
 
@@ -56,19 +56,11 @@ Times a Burn training epoch on wgpu (Metal) vs ndarray (CPU).
 cargo run --release --features "burn-ndarray,burn-wgpu" --example bench_wgpu
 ```
 
-## candle (legacy path; being retired in favour of Burn)
-
-| Example | Question | Run |
-|---|---|---|
-| `train_wn18rr` | Train + evaluate a KGE model on WN18RR end to end | `cargo run --release --features candle --example train_wn18rr` |
-| `bench_burn` | Burn vs candle training speed and loss on a small set | `cargo run --release --features "candle,burn-ndarray" --example bench_burn` |
-| `bench_training` | Per-epoch training cost | `cargo run --release --features candle --example bench_training` |
-
 ## Utility (no ML backend needed)
 
 | Example | Question | Run |
 |---|---|---|
-| `score` | Score triples with a CPU scorer, no candle dependency | `cargo run --release --example score` |
+| `score` | Score triples with a CPU scorer (no training backend needed) | `cargo run --release --example score` |
 | `bench_scoring` | Scoring hot-path throughput | `cargo run --release --example bench_scoring` |
 | `bench_f32_vs_f64` | Does f64 accumulation matter for dot products? | `cargo run --release --example bench_f32_vs_f64` |
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0] - 2026-06-28
+
+### Removed
+
+- `candle` and `cuda` features, the candle `train` module, and the candle-only
+  examples (`train_wn18rr`, `bench_training`, `bench_burn`). Training now runs
+  entirely on Burn. Breaking: the `candle`/`cuda` feature flags and the
+  `tranz::train` module no longer exist.
+
+### Changed
+
+- `tranz train` trains via Burn `train_kge` (1-N/1vsAll cross-entropy, AdamW) on
+  the `burn-ndarray` (CPU) or `burn-wgpu` (Metal/Vulkan) backend. The candle-only
+  CLI flags (`--optimizer`, `--gamma`, `--negatives`, `--alpha`, `--n3`,
+  `--norm`, `--dropout`, `--subsampling`, `--normalize`, `--warmup`,
+  `--cosine-cycles`, `--checkpoint`, `--l2`, `--swa`, `--rel-pred`, `--gpu`) are
+  removed; 1-N is the only training mode (`--1n` is accepted as a no-op).
+- The bin and training examples require a Burn backend feature
+  (`--features burn-ndarray` for CPU, add `burn-wgpu` for GPU/Metal).
+
 ## [0.5.3] - 2026-06-10
 
 ### Deprecated

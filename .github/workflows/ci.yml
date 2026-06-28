@@ -27,14 +27,12 @@ jobs:
         if: matrix.lint
       - run: cargo clippy --all-targets -- -D warnings
         if: matrix.lint
-      - run: cargo clippy --all-targets --features candle -- -D warnings
-        if: matrix.lint
-      - run: cargo clippy --all-targets --features "candle,burn-ndarray,burn-wgpu,rand" -- -D warnings
+      - run: cargo clippy --all-targets --features "burn-ndarray,burn-wgpu,rand" -- -D warnings
         if: matrix.lint
       - run: cargo test
-      - run: cargo test --features candle
+      - run: cargo test --features burn-ndarray
         if: matrix.lint
-      - run: cargo doc --features candle --no-deps
+      - run: cargo doc --features burn-ndarray --no-deps
         if: matrix.lint
         env:
           RUSTDOCFLAGS: -Dwarnings

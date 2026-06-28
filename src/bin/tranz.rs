@@ -41,28 +41,21 @@ fn print_usage() {
 USAGE:
     tranz train [OPTIONS]
 
+Training uses the Burn backend with 1-N (1vsAll) cross-entropy and AdamW.
+Build with a backend: --features burn-ndarray (CPU) or --features burn-wgpu (GPU/Metal).
+
 TRAIN OPTIONS:
     --data <DIR>          WN18RR-format directory (train.txt, valid.txt, test.txt)
     --triples <FILE>      Single TSV/CSV triple file (auto-split 80/10/10)
     --model <MODEL>       complex, distmult, rotate, transe (default: transe)
-                          Recommended: complex --1n --label-smoothing 0.1
+                          Recommended: complex --label-smoothing 0.1 --reciprocals
     --dim <N>             Embedding dimension (default: 200)
     --epochs <N>          Training epochs (default: 500)
     --batch-size <N>      Batch size (default: 512)
-    --gamma <F>           Margin (default: 12.0)
     --lr <F>              Learning rate (default: 0.001)
-    --negatives <N>       Negative samples per positive (default: 256)
-    --alpha <F>           SANS adversarial temperature (default: 1.0)
-    --n3 <F>              N3 regularization coefficient (default: 0.0)
-    --norm <N>            Distance norm: 1=L1, 2=L2 (default: 1)
-    --dropout <F>         Embedding dropout rate (default: 0.0)
-    --1n / --one-to-n     Use 1-N scoring with BCE loss (faster convergence)
-    --label-smoothing <F> Label smoothing epsilon for 1-N mode (default: 0.0)
-    --reciprocals         Add reciprocal relations
-    --normalize           Normalize entity embeddings to unit L2 norm
-    --subsampling         Apply entity frequency subsampling weights
-    --warmup <N>          Linear LR warmup epochs (default: 0)
-    --log-interval <N>    Print loss every N epochs (default: 10)
+    --init-scale <F>      Init std for embeddings (default: 0.001)
+    --label-smoothing <F> Label smoothing epsilon for 1-N CE (default: 0.0)
+    --reciprocals         Add reciprocal relations before training
     --output <DIR>        Output directory for embeddings (default: output/)
     --eval                Evaluate on test set after training
 
@@ -237,51 +230,31 @@ fn cmd_predict(args: &[String]) {
     }
 }
 
-#[cfg(not(feature = "candle"))]
-fn cmd_train(_args: &[str]) {
-    eprintln!(
-        "Training requires the 'candle' feature. Build with: cargo install tranz --features candle"
-    );
-    std::process::exit(1);
-}
-
-#[cfg(feature = "candle")]
 fn cmd_train(args: &[String]) {
+    use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
     use tranz::dataset::{self, DatasetExt, InternedDatasetExt};
     use tranz::io::export_embeddings;
-    use tranz::train::{self, ModelType, TrainConfig};
-    use tranz::Scorer;
+
+    // Backend: prefer wgpu (Metal/Vulkan) when enabled, else ndarray (CPU).
+    // The bin's required-features guarantees burn-ndarray, so `not(burn-wgpu)`
+    // always resolves to an available backend.
+    #[cfg(feature = "burn-wgpu")]
+    type TrainB = burn::backend::Autodiff<burn_wgpu::Wgpu>;
+    #[cfg(not(feature = "burn-wgpu"))]
+    type TrainB = burn::backend::Autodiff<burn_ndarray::NdArray>;
 
     let mut data_dir: Option<PathBuf> = None;
     let mut triples_file: Option<PathBuf> = None;
-    let mut model_type = ModelType::TransE;
-    let mut optimizer_type = tranz::train::OptimizerType::AdamW;
+    let mut model_type = BurnModelType::TransE;
     let mut dim = 200_usize;
     let mut init_scale = 1e-3_f64;
     let mut epochs = 500_usize;
     let mut batch_size = 512_usize;
-    let mut gamma = 12.0_f32;
     let mut lr = 0.001_f64;
-    let mut num_negatives = 256_usize;
-    let mut alpha = 1.0_f32;
-    let mut n3_reg = 0.0_f32;
-    let mut dropout = 0.0_f32;
-    let mut distance_norm = 1_u32;
-    let mut subsampling = false;
+    let mut label_smoothing = 0.0_f64;
     let mut reciprocals = false;
-    let mut normalize = false;
-    let mut warmup = 0_usize;
-    let mut cosine_cycles = 0_usize;
-    let mut log_interval = 10_usize;
     let mut output_dir = PathBuf::from("output");
-    let mut checkpoint_interval = 0_usize;
     let mut do_eval = false;
-    let mut use_gpu = false;
-    let mut one_to_n = false;
-    let mut label_smoothing = 0.0_f32;
-    let mut l2_reg = 0.0_f32;
-    let mut swa_start_epoch = 0_usize;
-    let mut relation_prediction_weight = 0.0_f32;
 
     let mut i = 0;
     while i < args.len() {
@@ -297,23 +270,12 @@ fn cmd_train(args: &[String]) {
             "--model" => {
                 i += 1;
                 model_type = match args[i].as_str() {
-                    "transe" => ModelType::TransE,
-                    "rotate" => ModelType::RotatE,
-                    "complex" => ModelType::ComplEx,
-                    "distmult" => ModelType::DistMult,
+                    "transe" => BurnModelType::TransE,
+                    "rotate" => BurnModelType::RotatE,
+                    "complex" => BurnModelType::ComplEx,
+                    "distmult" => BurnModelType::DistMult,
                     other => {
                         eprintln!("Unknown model: {other}");
-                        std::process::exit(1);
-                    }
-                };
-            }
-            "--optimizer" => {
-                i += 1;
-                optimizer_type = match args[i].as_str() {
-                    "adam" | "adamw" => tranz::train::OptimizerType::AdamW,
-                    "adagrad" => tranz::train::OptimizerType::Adagrad,
-                    other => {
-                        eprintln!("Unknown optimizer: {other}. Use: adamw, adagrad");
                         std::process::exit(1);
                     }
                 };
@@ -334,54 +296,16 @@ fn cmd_train(args: &[String]) {
                 i += 1;
                 batch_size = args[i].parse().unwrap();
             }
-            "--gamma" => {
-                i += 1;
-                gamma = args[i].parse().unwrap();
-            }
             "--lr" => {
                 i += 1;
                 lr = args[i].parse().unwrap();
             }
-            "--negatives" => {
+            "--label-smoothing" => {
                 i += 1;
-                num_negatives = args[i].parse().unwrap();
-            }
-            "--alpha" => {
-                i += 1;
-                alpha = args[i].parse().unwrap();
-            }
-            "--n3" => {
-                i += 1;
-                n3_reg = args[i].parse().unwrap();
-            }
-            "--norm" => {
-                i += 1;
-                distance_norm = args[i].parse().unwrap();
-            }
-            "--dropout" => {
-                i += 1;
-                dropout = args[i].parse().unwrap();
-            }
-            "--subsampling" => {
-                subsampling = true;
+                label_smoothing = args[i].parse().unwrap();
             }
             "--reciprocals" => {
                 reciprocals = true;
-            }
-            "--normalize" => {
-                normalize = true;
-            }
-            "--warmup" => {
-                i += 1;
-                warmup = args[i].parse().unwrap();
-            }
-            "--cosine-cycles" => {
-                i += 1;
-                cosine_cycles = args[i].parse().unwrap();
-            }
-            "--log-interval" => {
-                i += 1;
-                log_interval = args[i].parse().unwrap();
             }
             "--output" => {
                 i += 1;
@@ -390,34 +314,11 @@ fn cmd_train(args: &[String]) {
             "--eval" => {
                 do_eval = true;
             }
-            "--gpu" => {
-                use_gpu = true;
-            }
-            "--checkpoint" => {
-                i += 1;
-                checkpoint_interval = args[i].parse().unwrap();
-            }
-            "--1n" | "--one-to-n" => {
-                one_to_n = true;
-            }
-            "--label-smoothing" => {
-                i += 1;
-                label_smoothing = args[i].parse().unwrap();
-            }
-            "--l2" | "--l2-reg" => {
-                i += 1;
-                l2_reg = args[i].parse().unwrap();
-            }
-            "--swa" | "--swa-start" => {
-                i += 1;
-                swa_start_epoch = args[i].parse().unwrap();
-            }
-            "--rel-pred" => {
-                i += 1;
-                relation_prediction_weight = args[i].parse().unwrap();
-            }
+            // 1-N (1vsAll) CE is the only training mode; accepted for compatibility.
+            "--1n" | "--one-to-n" => {}
             other => {
                 eprintln!("Unknown argument: {other}");
+                eprintln!("Run `tranz help` for the supported flags (Burn 1-N trainer).");
                 std::process::exit(1);
             }
         }
@@ -459,60 +360,34 @@ fn cmd_train(args: &[String]) {
         interned.test.len(),
     );
 
-    let config = TrainConfig {
-        model_type,
-        optimizer: optimizer_type,
+    let config = BurnTrainConfig {
         dim,
         init_scale,
-        num_negatives,
-        gamma,
-        adversarial_temperature: alpha,
         lr,
-        embedding_dropout: dropout,
-        n3_reg,
-        distance_norm,
-        subsampling,
-        one_to_n,
         label_smoothing,
+        n3_reg: 0.0,
         batch_size,
         epochs,
-        normalize_entities: normalize,
-        warmup_epochs: warmup,
-        cosine_cycles,
-        log_interval,
-        checkpoint_dir: if checkpoint_interval > 0 {
-            Some(output_dir.clone())
-        } else {
-            None
-        },
-        checkpoint_interval,
-        l2_reg,
-        swa_start_epoch,
-        relation_prediction_weight,
-        ..TrainConfig::default()
+        log_interval: 0,
     };
 
     // Print full command for reproducibility.
     eprintln!("Command: tranz train {}", args.join(" "));
-    eprintln!("Training {model_type:?} dim={dim} gamma={gamma} lr={lr} epochs={epochs}");
-    let device = if use_gpu {
-        candle_core::Device::new_cuda(0).unwrap_or_else(|e| {
-            eprintln!("CUDA not available: {e}, falling back to CPU");
-            candle_core::Device::Cpu
-        })
-    } else {
-        candle_core::Device::Cpu
-    };
+    eprintln!("Training {model_type:?} dim={dim} lr={lr} epochs={epochs} (Burn 1-N / AdamW)");
+    #[cfg(feature = "burn-wgpu")]
+    let device = burn_wgpu::WgpuDevice::default();
+    #[cfg(not(feature = "burn-wgpu"))]
+    let device = burn_ndarray::NdArrayDevice::Cpu;
     let start = Instant::now();
 
-    let result = train::train(
+    let result = train_kge::<TrainB>(
         &interned.train,
         interned.num_entities(),
         interned.num_relations(),
+        model_type,
         &config,
         &device,
-    )
-    .unwrap();
+    );
 
     eprintln!(
         "Training complete in {:.1}s, final loss: {:.4}",
@@ -521,8 +396,8 @@ fn cmd_train(args: &[String]) {
     );
 
     // Export embeddings.
-    let entity_vecs = result.model.entity_vecs().unwrap();
-    let relation_vecs = result.model.relation_vecs().unwrap();
+    let entity_vecs = result.entity_vecs.clone();
+    let relation_vecs = result.relation_vecs.clone();
     eprintln!("Exporting embeddings to {}", output_dir.display());
     let ent_names: Vec<String> = (0..interned.num_entities())
         .map(|i| interned.entities.get(i).unwrap().to_string())
@@ -550,14 +425,9 @@ fn cmd_train(args: &[String]) {
             interned.test.len()
         );
         let filter = FilterIndex::from_dataset(&interned);
-        let scorer: Box<dyn Scorer + Sync> = match model_type {
-            ModelType::TransE => Box::new(result.model.to_transe().unwrap()),
-            ModelType::RotatE => Box::new(result.model.to_rotate().unwrap()),
-            ModelType::ComplEx => Box::new(result.model.to_complex().unwrap()),
-            ModelType::DistMult => Box::new(result.model.to_distmult().unwrap()),
-        };
-        let result = evaluate_link_prediction_detailed(scorer.as_ref(), &interned.test, &filter);
-        let m = result.metrics;
+        let scorer = result.to_scorer();
+        let eval = evaluate_link_prediction_detailed(scorer.as_ref(), &interned.test, &filter);
+        let m = eval.metrics;
         println!("MRR:      {:.4}", m.mrr);
         println!("  head:   {:.4}", m.head_mrr);
         println!("  tail:   {:.4}", m.tail_mrr);
@@ -566,10 +436,10 @@ fn cmd_train(args: &[String]) {
         println!("Hits@3:   {:.4}", m.hits_at_3);
         println!("Hits@10:  {:.4}", m.hits_at_10);
 
-        if !result.per_relation.is_empty() {
+        if !eval.per_relation.is_empty() {
             println!();
             println!("Per-relation MRR:");
-            let mut rels: Vec<_> = result.per_relation.iter().collect();
+            let mut rels: Vec<_> = eval.per_relation.iter().collect();
             rels.sort_by_key(|&(id, _)| *id);
             for (&rel_id, metrics) in &rels {
                 let name = interned.relations.get(rel_id).unwrap_or("?");

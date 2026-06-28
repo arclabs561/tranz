@@ -16,8 +16,9 @@
 //! ## Feature flags
 //!
 //! - **`rand`** (default): enables random initialization via `Model::new()`.
-//! - **`candle`**: enables GPU training via the `train` module.
-//! - **`cuda`**: implies `candle`, enables CUDA acceleration.
+//! - **`burn-ndarray`**: enables training via the [`burn_train`] module on the
+//!   ndarray (CPU) backend.
+//! - **`burn-wgpu`**: training on the WGPU backend (Metal/Vulkan/WebGPU).
 
 #![warn(missing_docs)]
 
@@ -27,8 +28,6 @@ pub mod dataset;
 pub mod eval;
 pub mod io;
 pub mod query;
-#[cfg(feature = "candle")]
-pub mod train;
 
 /// Errors from tranz operations.
 #[derive(Debug, thiserror::Error)]
