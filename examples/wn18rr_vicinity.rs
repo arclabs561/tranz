@@ -8,7 +8,18 @@
 //!
 //! Data-gated: exits 0 if `data/WN18RR` is absent.
 //!
-//! Run: `cargo run --release --features burn-cpu --example wn18rr_vicinity`
+//! Run on Metal: `cargo run --release --features "burn-cpu,burn-gpu" --example wn18rr_vicinity`
+//! (drop `burn-gpu` for CPU ndarray).
+//!
+//! Sample output:
+//! ```text
+//! indexed 40943 entity vectors in vicinity HNSW
+//! nearest entities by cosine similarity (id: [neighbours]):
+//!       0: [13635(0.683), 24364(0.662), 14327(0.657), 5495(0.653), 29144(0.645)]
+//!     100: [27053(0.585), 28238(0.555), 28369(0.548), 31452(0.541), 20207(0.530)]
+//!    1000: [222(0.695), 28193(0.671), 16838(0.609), 17370(0.590), 8282(0.575)]
+//!    5000: [33555(0.874), 33955(0.866), 39382(0.857), 3316(0.851), 37502(0.828)]
+//! ```
 
 #![allow(missing_docs)]
 

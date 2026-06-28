@@ -8,7 +8,24 @@
 //! Data-gated: exits 0 with a message if `data/WN18RR` is absent, so it is safe
 //! in CI that compiles or runs examples.
 //!
-//! Run: `cargo run --release --features burn-cpu --example wn18rr_kge_burn`
+//! Cost: trains all four models on full WN18RR (40943 entities, 173670
+//! triples). On Metal (`--features burn-cpu,burn-gpu`) ~30-60s per model
+//! (~3 min total); on CPU ndarray it is minutes per model. Shrink for a quick
+//! smoke run with `TRAIN_CAP=20000 DIM=32 EPOCHS=5`.
+//!
+//! Run on Metal: `cargo run --release --features "burn-cpu,burn-gpu" --example wn18rr_kge_burn`
+//! (drop `burn-gpu` for CPU ndarray).
+//!
+//! Sample output (Metal, dim 50, 3 epochs, sampled eval over 200 candidates):
+//! ```text
+//! model      train_s   loss[0]->loss[-1]      test_MRR   H@10
+//! DistMult     39.1    10.386 ->   3.979        0.5706   0.6459
+//! TransE       32.5     9.954 ->   5.013        0.5488   0.6407
+//! ComplEx      41.8    10.317 ->   4.077        0.5560   0.6390
+//! RotatE       57.1     9.596 ->   4.774        0.5532   0.6307
+//! ```
+//! Sampled-eval MRR (200 candidates) reads higher than full-entity-ranking
+//! MRR; treat it as a relative signal, not a published-benchmark number.
 
 #![allow(missing_docs)]
 
