@@ -381,7 +381,7 @@ pub struct BurnKgeResult {
 
 impl BurnKgeResult {
     /// Build the matching CPU scorer for evaluation.
-    pub fn to_scorer(&self) -> Box<dyn crate::Scorer> {
+    pub fn to_scorer(&self) -> Box<dyn crate::Scorer + Sync> {
         let e = self.entity_vecs.clone();
         let r = self.relation_vecs.clone();
         match self.model_type {

@@ -49,6 +49,14 @@ name = "train_wn18rr"
 required-features = ["candle"]
 
 [[example]]
+name = "wn18rr_kge_burn"
+required-features = ["burn-cpu"]
+
+[[example]]
+name = "wn18rr_vicinity"
+required-features = ["burn-cpu"]
+
+[[example]]
 name = "bench_training"
 required-features = ["candle"]
 
@@ -63,6 +71,8 @@ required-features = ["burn-gpu"]
 [dev-dependencies]
 proptest = "1.5"
 tempfile = "3"
+# Serving-layer demo (examples/wn18rr_vicinity): index trained point embeddings.
+vicinity = "0.10"
 
 [lints.rust]
 missing_docs = "warn"
