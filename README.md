@@ -182,11 +182,13 @@ let result = train(&triples, num_entities, num_relations, &config, &device).unwr
 
 ## Examples
 
-Runnable examples live in [`examples/`](examples/):
+See [`examples/README.md`](examples/README.md) for the full gallery, where each
+example states the question it answers, the run command, and real sample output.
+Highlights:
 
-- `train_wn18rr` trains a KGE model on WN18RR and evaluates filtered link prediction, the full benchmark reproduction.
-- `score` scores triples from saved embeddings with no candle dependency, the smallest way to use a trained model.
-- `bench_training` / `bench_scoring` measure epoch cost and scoring hot paths; `bench_burn` / `bench_wgpu` / `bench_f32_vs_f64` compare backends (burn vs candle), devices (WGPU/Metal vs CPU), and accumulation precision.
+- `wn18rr_kge_burn` trains all four models on real WN18RR with the Burn backend (Metal-accelerated) and reports MRR/Hits, the real-data check that the Burn trainers learn.
+- `wn18rr_vicinity` trains point embeddings and serves nearest-neighbour queries through a [vicinity](https://crates.io/crates/vicinity) HNSW index.
+- `train_wn18rr` is the full candle benchmark reproduction (the table above); `score` is the smallest way to use a trained model; `bench_*` compare backends, devices, and accumulation precision.
 
 ## Companion to subsume
 
