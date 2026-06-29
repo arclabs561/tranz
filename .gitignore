@@ -1,5 +1,6 @@
 /target
 data/
+output/
 flamegraph.svg
 cargo-flamegraph.trace
 Cargo.lock

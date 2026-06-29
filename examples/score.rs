@@ -1,4 +1,4 @@
-//! Minimal scoring example -- no candle dependency needed.
+//! Minimal scoring example: no training backend needed.
 //!
 //! Usage: cargo run --example score
 

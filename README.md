@@ -1,7 +1,7 @@
 # tranz
 
 Point-embedding knowledge graph models: TransE, RotatE, ComplEx,
-and DistMult. GPU training via candle.
+and DistMult. GPU training via Burn (wgpu/Metal).
 
 ```toml
 [dependencies]
@@ -28,17 +28,19 @@ $\lVert \cdot \rVert$ is the L2 norm, $\circ$ is element-wise product, $\langle 
 
 ## Quick start
 
-Install with `cargo install tranz --features candle`.
+Install with `cargo install tranz --features burn-ndarray` (CPU) or
+`--features burn-wgpu` (GPU/Metal). Training uses Burn's 1-N (1vsAll)
+cross-entropy with AdamW.
 
 ```sh
-# Train with 1-N scoring (recommended)
+# Train (ComplEx is the strongest recipe with label smoothing + reciprocals)
 tranz train --data data/WN18RR/ --model complex --dim 200 \
-    --1n --label-smoothing 0.1 --reciprocals \
+    --label-smoothing 0.1 --reciprocals \
     --epochs 100 --lr 0.001 --output embeddings/ --eval
 
-# Train with negative sampling (classic)
+# Train from a single triple file (auto-split 80/10/10)
 tranz train --triples my_graph.tsv --model transe --dim 200 \
-    --epochs 500 --gamma 9.0 --alpha 0.5 --output embeddings/ --eval
+    --epochs 500 --output embeddings/ --eval
 
 # Predict from saved embeddings
 tranz predict --embeddings embeddings/ --model distmult \
@@ -47,28 +49,26 @@ tranz predict --embeddings embeddings/ --model distmult \
 
 ## Benchmark: WN18RR
 
+Trained with the Burn 1-N (1vsAll) cross-entropy trainer (AdamW), full filtered
+evaluation on the test split.
+
 | Model | Config | Dim | Epochs | MRR | H@1 | H@10 |
 |-------|--------|-----|--------|-----|-----|------|
-| ComplEx | Adagrad + N3 + reciprocals | 100 | 100 | **0.438** | 0.400 | 0.512 |
-| ComplEx | Adam + 1-N + reciprocals | 100 | 50 | 0.433 | 0.406 | 0.487 |
-| DistMult | Adam + 1-N | 100 | 50 | 0.341 | 0.329 | 0.362 |
+| ComplEx | 1-N + label smoothing + reciprocals | 100 | 50 | **0.424** | 0.398 | 0.476 |
 
-Published ComplEx MRR on WN18RR is 0.475 (Lacroix et al. 2018).
-tranz reaches 92% of published with the same recipe (Adagrad, N3, reciprocals).
+Published ComplEx MRR on WN18RR is 0.475 (Lacroix et al. 2018, with Adagrad + N3
+regularization, which the Burn 1-N trainer does not implement).
 
-Commands to reproduce:
+Reproduce (about 20 min on Metal: dim 100, 50 epochs over full WN18RR):
 
 ```sh
-# Adagrad + N3 (best)
-tranz train --data data/WN18RR/ --model complex --dim 100 \
-    --1n --reciprocals --optimizer adagrad --init-scale 1e-3 \
-    --n3 0.1 --lr 0.1 --epochs 100 --eval
-
-# Adam + 1-N
-tranz train --data data/WN18RR/ --model complex --dim 100 \
-    --1n --label-smoothing 0.1 --reciprocals \
-    --epochs 50 --lr 0.001 --eval
+cargo run --release --features "burn-ndarray,burn-wgpu" --bin tranz -- \
+    train --data data/WN18RR/ --model complex --dim 100 \
+    --label-smoothing 0.1 --reciprocals --epochs 50 --lr 0.001 --eval
 ```
+
+The other three models train end to end on WN18RR too; see the
+`wn18rr_kge_burn` example for a four-model relative comparison.
 
 ## Library usage
 
@@ -154,30 +154,38 @@ let top5 = ensemble.top_k_tails(0, 0, 5);
 
 ## Training
 
-Two backends available:
+Training runs on the Burn backend, selected by feature:
 
 | Feature | Backend | GPU | Best for |
 |---------|---------|-----|----------|
-| `candle` | Candle | CUDA | Production training, all 4 models |
-| `burn-cpu` | Burn + ndarray | -- | CPU training, ComplEx |
-| `burn-gpu` | Burn + WGPU | Metal/Vulkan | macOS GPU training, ComplEx |
+| `burn-ndarray` | Burn + ndarray | -- | CPU training, all 4 models |
+| `burn-wgpu` | Burn + WGPU | Metal/Vulkan | macOS/GPU training, all 4 models |
 
-1-N scoring (all entities per query via matmul + softmax CE) is recommended. Negative sampling with SANS weighting is also supported (candle backend only).
+All four models train with 1-N (1vsAll) scoring: every entity is scored per
+query via matmul + softmax cross-entropy, optimized with AdamW. Label smoothing
+is optional.
 
 ```rust
-use tranz::train::{train, TrainConfig, ModelType};
+use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
 
-let config = TrainConfig {
-    model_type: ModelType::DistMult,
+type B = burn::backend::Autodiff<burn_ndarray::NdArray>;
+let device = burn_ndarray::NdArrayDevice::Cpu;
+
+let config = BurnTrainConfig {
     dim: 200,
-    one_to_n: true,
     label_smoothing: 0.1,
-    embedding_dropout: 0.1,
     epochs: 100,
-    ..TrainConfig::default()
+    ..BurnTrainConfig::default()
 };
 
-let result = train(&triples, num_entities, num_relations, &config, &device).unwrap();
+let result = train_kge::<B>(
+    &triples,
+    num_entities,
+    num_relations,
+    BurnModelType::DistMult,
+    &config,
+    &device,
+);
 ```
 
 ## Examples
@@ -188,7 +196,7 @@ Highlights:
 
 - `wn18rr_kge_burn` trains all four models on real WN18RR with the Burn backend (Metal-accelerated) and reports MRR/Hits, the real-data check that the Burn trainers learn.
 - `wn18rr_vicinity` trains point embeddings and serves nearest-neighbour queries through a [vicinity](https://crates.io/crates/vicinity) HNSW index.
-- `train_wn18rr` is the full candle benchmark reproduction (the table above); `score` is the smallest way to use a trained model; `bench_*` compare backends, devices, and accumulation precision.
+- `score` is the smallest way to use a trained model; `bench_wgpu` times Metal vs CPU; `bench_scoring` and `bench_f32_vs_f64` measure the scoring hot path.
 
 ## Companion to subsume
 
