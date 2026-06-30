@@ -20,8 +20,20 @@ fn bench<S: Scorer>(name: &str, model: &S, iters: usize) {
     }
     let head_ms = start.elapsed().as_secs_f64() * 1000.0 / iters as f64;
 
+    let start = Instant::now();
+    for _ in 0..iters {
+        std::hint::black_box(model.top_k_tails(0, 0, 10));
+    }
+    let top_tail_ms = start.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+
+    let start = Instant::now();
+    for _ in 0..iters {
+        std::hint::black_box(model.top_k_heads(0, 0, 10));
+    }
+    let top_head_ms = start.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+
     eprintln!(
-        "{name:<12} N={n:<6} tail={tail_ms:.2}ms  head={head_ms:.2}ms  ratio={:.2}x",
+        "{name:<12} N={n:<6} tail={tail_ms:.2}ms  head={head_ms:.2}ms  top_tail={top_tail_ms:.2}ms  top_head={top_head_ms:.2}ms  ratio={:.2}x",
         head_ms / tail_ms
     );
 }

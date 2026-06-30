@@ -71,26 +71,12 @@ pub trait Scorer: Sync {
     /// Returns `(entity_id, score)` pairs sorted by score ascending
     /// (best first, since lower = more likely).
     fn top_k_tails(&self, head: usize, relation: usize, k: usize) -> Vec<(usize, f32)> {
-        let mut scored: Vec<(usize, f32)> = self
-            .score_all_tails(head, relation)
-            .into_iter()
-            .enumerate()
-            .collect();
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(k);
-        scored
+        top_k_from_scores(self.score_all_tails(head, relation), k)
     }
 
     /// Return the top-k entities by score for `(?, relation, tail)`.
     fn top_k_heads(&self, relation: usize, tail: usize, k: usize) -> Vec<(usize, f32)> {
-        let mut scored: Vec<(usize, f32)> = self
-            .score_all_heads(relation, tail)
-            .into_iter()
-            .enumerate()
-            .collect();
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(k);
-        scored
+        top_k_from_scores(self.score_all_heads(relation, tail), k)
     }
 
     /// Score all relations for `(head, ?, tail)`.
@@ -112,15 +98,28 @@ pub trait Scorer: Sync {
         num_relations: usize,
         k: usize,
     ) -> Vec<(usize, f32)> {
-        let mut scored: Vec<(usize, f32)> = self
-            .score_all_relations(head, tail, num_relations)
-            .into_iter()
-            .enumerate()
-            .collect();
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(k);
-        scored
+        top_k_from_scores(self.score_all_relations(head, tail, num_relations), k)
     }
+}
+
+fn top_k_from_scores(scores: Vec<f32>, k: usize) -> Vec<(usize, f32)> {
+    if k == 0 || scores.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, f32)> = scores.into_iter().enumerate().collect();
+    if k < scored.len() {
+        scored.select_nth_unstable_by(k, score_id_order);
+        scored.truncate(k);
+    }
+    scored.sort_by(score_id_order);
+    scored
+}
+
+fn score_id_order(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
+    a.1.partial_cmp(&b.1)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| a.0.cmp(&b.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,6 +1214,14 @@ mod tests {
         for w in top.windows(2) {
             assert!(w[0].1 <= w[1].1);
         }
+    }
+
+    #[test]
+    fn top_k_zero_is_empty() {
+        let model = DistMult::new(10, 5, 8);
+        assert!(model.top_k_tails(0, 0, 0).is_empty());
+        assert!(model.top_k_heads(0, 0, 0).is_empty());
+        assert!(model.top_k_relations(0, 1, 5, 0).is_empty());
     }
 
     // -- TransE norm --------------------------------------------------------
