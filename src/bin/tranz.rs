@@ -233,7 +233,10 @@ fn cmd_predict(args: &[String]) {
 fn cmd_train(args: &[String]) {
     use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
     use tranz::dataset::{self, DatasetExt, InternedDatasetExt};
-    use tranz::io::export_embeddings;
+    use tranz::io::{
+        describe_embedding_artifact, export_embeddings, write_embedding_manifest,
+        EmbeddingManifest, ManifestDataset, ManifestMetrics, ManifestTraining,
+    };
 
     // Backend: prefer wgpu (Metal/Vulkan) when enabled, else ndarray (CPU).
     // The bin's required-features guarantees burn-ndarray, so `not(burn-wgpu)`
@@ -344,6 +347,21 @@ fn cmd_train(args: &[String]) {
         eprintln!("Specify --data <DIR> or --triples <FILE>");
         std::process::exit(1);
     };
+    let (source_kind, source_path, split) = if let Some(dir) = &data_dir {
+        (
+            "directory".to_string(),
+            dir.display().to_string(),
+            "provided_train_valid_test".to_string(),
+        )
+    } else if let Some(file) = &triples_file {
+        (
+            "triple_file".to_string(),
+            file.display().to_string(),
+            "auto_80_10_10".to_string(),
+        )
+    } else {
+        unreachable!("dataset source was validated above")
+    };
 
     let mut interned = ds.into_interned();
     if reciprocals {
@@ -415,6 +433,8 @@ fn cmd_train(args: &[String]) {
     .unwrap();
     eprintln!("Wrote entities.tsv and relations.tsv");
 
+    let mut manifest_metrics = None;
+
     // Optional evaluation.
     if do_eval && !interned.test.is_empty() {
         use tranz::dataset::FilterIndex;
@@ -435,6 +455,15 @@ fn cmd_train(args: &[String]) {
         println!("Hits@1:   {:.4}", m.hits_at_1);
         println!("Hits@3:   {:.4}", m.hits_at_3);
         println!("Hits@10:  {:.4}", m.hits_at_10);
+        manifest_metrics = Some(ManifestMetrics {
+            mrr: m.mrr,
+            head_mrr: m.head_mrr,
+            tail_mrr: m.tail_mrr,
+            mean_rank: m.mean_rank,
+            hits_at_1: m.hits_at_1,
+            hits_at_3: m.hits_at_3,
+            hits_at_10: m.hits_at_10,
+        });
 
         if !eval.per_relation.is_empty() {
             println!();
@@ -450,6 +479,69 @@ fn cmd_train(args: &[String]) {
             }
         }
     }
+
+    let entity_dim = entity_vecs.first().map_or(0, Vec::len);
+    let relation_dim = relation_vecs.first().map_or(0, Vec::len);
+    let artifacts = vec![
+        describe_embedding_artifact(
+            &output_dir,
+            "entities.tsv",
+            "application/vnd.tranz.entity-embeddings+w2v-tsv",
+            "w2v-tsv",
+            ent_names.len(),
+            entity_dim,
+        ),
+        describe_embedding_artifact(
+            &output_dir,
+            "relations.tsv",
+            "application/vnd.tranz.relation-embeddings+w2v-tsv",
+            "w2v-tsv",
+            rel_names.len(),
+            relation_dim,
+        ),
+    ]
+    .into_iter()
+    .collect::<std::io::Result<Vec<_>>>()
+    .unwrap_or_else(|e| {
+        eprintln!("Failed to describe exported embeddings: {e}");
+        std::process::exit(1);
+    });
+
+    let manifest = EmbeddingManifest {
+        schema: "tranz.embedding-export.v1".to_string(),
+        model: model_type_name(model_type).to_string(),
+        score_order: "lower_is_better".to_string(),
+        artifacts,
+        dataset: ManifestDataset {
+            source_kind,
+            source_path,
+            split,
+            entities: interned.num_entities(),
+            relations: interned.num_relations(),
+            train_triples: interned.train.len(),
+            valid_triples: interned.valid.len(),
+            test_triples: interned.test.len(),
+        },
+        training: ManifestTraining {
+            trainer: "burn-1n-adamw".to_string(),
+            backend: burn_backend_name().to_string(),
+            dim,
+            init_scale,
+            lr,
+            label_smoothing,
+            n3_reg: config.n3_reg,
+            batch_size,
+            epochs,
+            reciprocals,
+            final_loss: result.losses.last().copied(),
+        },
+        metrics: manifest_metrics,
+    };
+    write_embedding_manifest(&output_dir, &manifest).unwrap_or_else(|e| {
+        eprintln!("Failed to write manifest.json: {e}");
+        std::process::exit(1);
+    });
+    eprintln!("Wrote manifest.json");
 }
 
 fn cmd_eval(args: &[String]) {
@@ -566,5 +658,22 @@ fn cmd_eval(args: &[String]) {
                 metrics.mrr, metrics.hits_at_10
             );
         }
+    }
+}
+
+fn model_type_name(model_type: tranz::burn_train::BurnModelType) -> &'static str {
+    match model_type {
+        tranz::burn_train::BurnModelType::TransE => "transe",
+        tranz::burn_train::BurnModelType::RotatE => "rotate",
+        tranz::burn_train::BurnModelType::ComplEx => "complex",
+        tranz::burn_train::BurnModelType::DistMult => "distmult",
+    }
+}
+
+fn burn_backend_name() -> &'static str {
+    if cfg!(feature = "burn-wgpu") {
+        "burn-wgpu"
+    } else {
+        "burn-ndarray"
     }
 }

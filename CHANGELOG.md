@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `tranz train` now writes `manifest.json` beside `entities.tsv` and
+  `relations.tsv`, recording model family, training config, split sizes,
+  SHA-256 artifact digests, byte sizes, and aggregate evaluation metrics when
+  `--eval` is used.
+
 ## [0.6.0] - 2026-06-28
 
 ### Removed

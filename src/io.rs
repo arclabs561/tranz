@@ -10,6 +10,9 @@
 use std::io::{self, BufRead, BufWriter, Write};
 use std::path::Path;
 
+#[cfg(feature = "artifact-manifest")]
+use sha2::{Digest, Sha256};
+
 /// Write embeddings in w2v TSV format.
 ///
 /// Format: first line is `count dim`, subsequent lines are
@@ -163,6 +166,178 @@ pub struct LoadedEmbeddings {
     pub relation_vecs: Vec<Vec<f32>>,
 }
 
+/// Training-output manifest for exported embeddings.
+///
+/// The manifest describes the files written by [`export_embeddings`] plus the
+/// training context needed to compare or reproduce the output directory.
+#[cfg(feature = "artifact-manifest")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingManifest {
+    /// Manifest schema identifier.
+    pub schema: String,
+    /// Model family, e.g. `transe`, `rotate`, `complex`, or `distmult`.
+    pub model: String,
+    /// Score ordering used by the exported model API.
+    pub score_order: String,
+    /// Exported artifact descriptors.
+    pub artifacts: Vec<EmbeddingArtifact>,
+    /// Dataset and split information.
+    pub dataset: ManifestDataset,
+    /// Training configuration.
+    pub training: ManifestTraining,
+    /// Optional aggregate evaluation metrics.
+    pub metrics: Option<ManifestMetrics>,
+}
+
+/// Descriptor for one exported embedding artifact.
+#[cfg(feature = "artifact-manifest")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingArtifact {
+    /// Relative path inside the export directory.
+    pub path: String,
+    /// Media-type-like artifact kind.
+    pub artifact_type: String,
+    /// On-disk format name.
+    pub format: String,
+    /// SHA-256 digest as lowercase hex.
+    pub sha256: String,
+    /// File size in bytes.
+    pub bytes: u64,
+    /// Matrix rows.
+    pub rows: usize,
+    /// Floats per row.
+    pub dim: usize,
+}
+
+/// Dataset metadata captured in an embedding export manifest.
+#[cfg(feature = "artifact-manifest")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManifestDataset {
+    /// Source kind, e.g. `directory` or `triple_file`.
+    pub source_kind: String,
+    /// Source path as supplied to the CLI.
+    pub source_path: String,
+    /// Split policy used for train/valid/test.
+    pub split: String,
+    /// Entity vocabulary size.
+    pub entities: usize,
+    /// Relation vocabulary size after any augmentation.
+    pub relations: usize,
+    /// Training triple count.
+    pub train_triples: usize,
+    /// Validation triple count.
+    pub valid_triples: usize,
+    /// Test triple count.
+    pub test_triples: usize,
+}
+
+/// Training configuration captured in an embedding export manifest.
+#[cfg(feature = "artifact-manifest")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManifestTraining {
+    /// Trainer identifier.
+    pub trainer: String,
+    /// Burn backend feature used by the CLI.
+    pub backend: String,
+    /// Embedding dimension requested by the user.
+    pub dim: usize,
+    /// Initialization scale.
+    pub init_scale: f64,
+    /// Learning rate.
+    pub lr: f64,
+    /// Label smoothing epsilon.
+    pub label_smoothing: f64,
+    /// N3 regularization coefficient.
+    pub n3_reg: f64,
+    /// Batch size.
+    pub batch_size: usize,
+    /// Number of epochs.
+    pub epochs: usize,
+    /// Whether reciprocal relations were added before training.
+    pub reciprocals: bool,
+    /// Final training loss, if at least one epoch ran.
+    pub final_loss: Option<f32>,
+}
+
+/// Aggregate link-prediction metrics captured in an embedding export manifest.
+#[cfg(feature = "artifact-manifest")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManifestMetrics {
+    /// Mean reciprocal rank.
+    pub mrr: f32,
+    /// Head-prediction MRR.
+    pub head_mrr: f32,
+    /// Tail-prediction MRR.
+    pub tail_mrr: f32,
+    /// Mean rank.
+    pub mean_rank: f32,
+    /// Hits@1.
+    pub hits_at_1: f32,
+    /// Hits@3.
+    pub hits_at_3: f32,
+    /// Hits@10.
+    pub hits_at_10: f32,
+}
+
+/// Describe an exported embedding file using its current on-disk bytes.
+#[cfg(feature = "artifact-manifest")]
+pub fn describe_embedding_artifact(
+    dir: &Path,
+    path: &str,
+    artifact_type: &str,
+    format: &str,
+    rows: usize,
+    dim: usize,
+) -> io::Result<EmbeddingArtifact> {
+    let full_path = dir.join(path);
+    let bytes = std::fs::metadata(&full_path)?.len();
+    let sha256 = sha256_file(&full_path)?;
+    Ok(EmbeddingArtifact {
+        path: path.to_string(),
+        artifact_type: artifact_type.to_string(),
+        format: format.to_string(),
+        sha256,
+        bytes,
+        rows,
+        dim,
+    })
+}
+
+/// Write an embedding export manifest as pretty JSON.
+#[cfg(feature = "artifact-manifest")]
+pub fn write_embedding_manifest(dir: &Path, manifest: &EmbeddingManifest) -> io::Result<()> {
+    let mut file = BufWriter::new(std::fs::File::create(dir.join("manifest.json"))?);
+    serde_json::to_writer_pretty(&mut file, manifest).map_err(io::Error::other)?;
+    writeln!(file)?;
+    file.flush()
+}
+
+#[cfg(feature = "artifact-manifest")]
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 64 * 1024];
+    loop {
+        let n = io::Read::read(&mut file, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+#[cfg(feature = "artifact-manifest")]
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 /// Load entity and relation embeddings from a directory.
 ///
 /// Expects `entities.tsv` and `relations.tsv` in w2v format (as written
@@ -305,5 +480,84 @@ mod tests {
         write_vocab_tsv(&mut buf, &names).unwrap();
         let content = String::from_utf8(buf).unwrap();
         assert_eq!(content, "0\talice\n1\tbob\n2\tcharlie\n");
+    }
+
+    #[cfg(feature = "artifact-manifest")]
+    #[test]
+    fn manifest_records_artifact_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ent_names = vec!["a".to_string(), "b".to_string()];
+        let ent_vecs = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        let rel_names = vec!["r1".to_string()];
+        let rel_vecs = vec![vec![0.5, 0.5]];
+
+        export_embeddings(dir.path(), &ent_names, &ent_vecs, &rel_names, &rel_vecs).unwrap();
+
+        let artifacts = vec![
+            describe_embedding_artifact(
+                dir.path(),
+                "entities.tsv",
+                "application/vnd.tranz.entity-embeddings+w2v-tsv",
+                "w2v-tsv",
+                2,
+                2,
+            )
+            .unwrap(),
+            describe_embedding_artifact(
+                dir.path(),
+                "relations.tsv",
+                "application/vnd.tranz.relation-embeddings+w2v-tsv",
+                "w2v-tsv",
+                1,
+                2,
+            )
+            .unwrap(),
+        ];
+
+        assert_eq!(
+            artifacts[0].bytes,
+            std::fs::metadata(dir.path().join("entities.tsv"))
+                .unwrap()
+                .len()
+        );
+        assert_eq!(artifacts[0].sha256.len(), 64);
+
+        let manifest = EmbeddingManifest {
+            schema: "tranz.embedding-export.v1".to_string(),
+            model: "distmult".to_string(),
+            score_order: "lower_is_better".to_string(),
+            artifacts,
+            dataset: ManifestDataset {
+                source_kind: "triple_file".to_string(),
+                source_path: "toy.tsv".to_string(),
+                split: "auto_80_10_10".to_string(),
+                entities: 2,
+                relations: 1,
+                train_triples: 1,
+                valid_triples: 0,
+                test_triples: 0,
+            },
+            training: ManifestTraining {
+                trainer: "burn-1n-adamw".to_string(),
+                backend: "burn-ndarray".to_string(),
+                dim: 2,
+                init_scale: 0.001,
+                lr: 0.001,
+                label_smoothing: 0.0,
+                n3_reg: 0.0,
+                batch_size: 4,
+                epochs: 1,
+                reciprocals: false,
+                final_loss: Some(0.5),
+            },
+            metrics: None,
+        };
+
+        write_embedding_manifest(dir.path(), &manifest).unwrap();
+        let json = std::fs::read_to_string(dir.path().join("manifest.json")).unwrap();
+        let parsed: EmbeddingManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.artifacts.len(), 2);
+        assert_eq!(parsed.artifacts[0].path, "entities.tsv");
+        assert_eq!(parsed.dataset.entities, 2);
     }
 }

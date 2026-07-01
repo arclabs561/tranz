@@ -103,6 +103,10 @@ let interned = ds.into_interned();
 
 ### Embedding export
 
+`tranz train` writes `entities.tsv`, `relations.tsv`, and `manifest.json`.
+The manifest records model family, training config, split sizes, SHA-256
+digests, byte sizes, and evaluation metrics when `--eval` is used.
+
 ```rust
 use tranz::io::{export_embeddings, flatten_matrix};
 
