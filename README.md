@@ -5,7 +5,7 @@ and DistMult. GPU training via Burn (wgpu/Metal).
 
 ```toml
 [dependencies]
-tranz = "0.5"
+tranz = "0.6"
 ```
 
 Dual-licensed under MIT or Apache-2.0.
