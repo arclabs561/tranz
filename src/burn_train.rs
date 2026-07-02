@@ -151,11 +151,12 @@ fn score_1n_heads<B: Backend>(
     let rc_re = r_re.clone() * t_re.clone() + r_im.clone() * t_im.clone();
     let rc_im = r_im * t_re - r_re * t_im;
 
-    // Re(h * rc) = h_re @ rc_re^T + h_im @ rc_im^T ... but rc is [batch, dim]
-    // We need [batch, num_entities], so: rc_re @ e_re^T + rc_im @ e_im^T
+    // Re(h * rc) = h_re * rc_re - h_im * rc_im (h is un-conjugated in the
+    // head role, so the imaginary product is subtracted). Against all
+    // entities: rc_re @ e_re^T - rc_im @ e_im^T.
     let e_re = model.entity_re.val();
     let e_im = model.entity_im.val();
-    rc_re.matmul(e_re.transpose()) + rc_im.matmul(e_im.transpose())
+    rc_re.matmul(e_re.transpose()) - rc_im.matmul(e_im.transpose())
 }
 
 /// Train ComplEx with 1-N scoring using burn.
@@ -463,7 +464,8 @@ fn score_1n_heads_kge<B: Backend>(
             let rc_re = r_re.clone() * t_re.clone() + r_im.clone() * t_im.clone();
             let rc_im = r_im * t_re - r_re * t_im;
             let (e_re, e_im) = re_im(ent, dim);
-            rc_re.matmul(e_re.transpose()) + rc_im.matmul(e_im.transpose())
+            // Re(h * rc): minus on the imaginary product (h un-conjugated).
+            rc_re.matmul(e_re.transpose()) - rc_im.matmul(e_im.transpose())
         }
         BurnModelType::RotatE => {
             // |r| = 1, so ||e o r - t|| = ||e - t o conj(r)||; target = t o conj(r).
@@ -661,6 +663,98 @@ mod tests {
             last < first,
             "Burn ComplEx loss should decrease: {first} -> {last}"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "burn-ndarray")]
+    fn burn_complex_scores_match_cpu_reference() {
+        // Parity contract between the burn scoring paths and the CPU
+        // reference: identical weights must produce identical scores (the
+        // CPU Scorer returns energies, lower = better, so burn + cpu ~= 0).
+        // Guards the head-role conjugation: Re(h * r * conj(t)) carries a
+        // minus on the imaginary product when scoring over heads.
+        let (ne, nr, dim) = (5usize, 2usize, 4usize);
+        let val = |i: usize| ((i * 37 + 11) % 19) as f32 / 19.0 - 0.5;
+        let ent_rows: Vec<Vec<f32>> = (0..ne)
+            .map(|e| (0..dim * 2).map(|j| val(e * 31 + j)).collect())
+            .collect();
+        let rel_rows: Vec<Vec<f32>> = (0..nr)
+            .map(|r| (0..dim * 2).map(|j| val(r * 53 + j + 7)).collect())
+            .collect();
+        let cpu = crate::ComplEx::from_vecs(ent_rows.clone(), rel_rows.clone(), dim);
+
+        let device = test_device();
+        let param = |rows: &[Vec<f32>], lo: usize, hi: usize| {
+            let flat: Vec<f32> = rows
+                .iter()
+                .flat_map(|r| r[lo..hi].iter().copied())
+                .collect();
+            Param::initialized(
+                ParamId::new(),
+                Tensor::<TestBackend, 2>::from_data(
+                    burn::tensor::TensorData::new(flat, [rows.len(), hi - lo]),
+                    &device,
+                ),
+            )
+        };
+        let model = BurnComplEx::<TestBackend> {
+            entity_re: param(&ent_rows, 0, dim),
+            entity_im: param(&ent_rows, dim, dim * 2),
+            relation_re: param(&rel_rows, 0, dim),
+            relation_im: param(&rel_rows, dim, dim * 2),
+        };
+        // The generic KGE model shares the concatenated [re.., im..] layout.
+        let kge = BurnKge::<TestBackend> {
+            entity: param(&ent_rows, 0, dim * 2),
+            relation: param(&rel_rows, 0, dim * 2),
+        };
+
+        let scores =
+            |t: Tensor<TestBackend, 2>| -> Vec<f32> { t.into_data().to_vec::<f32>().unwrap() };
+        for r in 0..nr {
+            for x in 0..ne {
+                let ids = |i: usize| {
+                    Tensor::<TestBackend, 1, Int>::from_data(
+                        burn::tensor::TensorData::new(vec![i as i64], [1]),
+                        &device,
+                    )
+                };
+                let (rels, xs) = (ids(r), ids(x));
+                let mt = BurnModelType::ComplEx;
+                let cases = [
+                    (
+                        "heads",
+                        scores(score_1n_heads(&model, &rels, &xs)),
+                        cpu.score_all_heads(r, x),
+                    ),
+                    (
+                        "tails",
+                        scores(score_1n(&model, &xs, &rels)),
+                        cpu.score_all_tails(x, r),
+                    ),
+                    (
+                        "kge heads",
+                        scores(score_1n_heads_kge(&kge, mt, dim, &rels, &xs)),
+                        cpu.score_all_heads(r, x),
+                    ),
+                    (
+                        "kge tails",
+                        scores(score_1n_kge(&kge, mt, dim, &xs, &rels)),
+                        cpu.score_all_tails(x, r),
+                    ),
+                ];
+                for (name, burn_scores, cpu_energies) in cases {
+                    assert_eq!(burn_scores.len(), ne);
+                    for (e, (b, c)) in burn_scores.iter().zip(cpu_energies.iter()).enumerate() {
+                        assert!(
+                            (b + c).abs() < 1e-4,
+                            "{name} mismatch at rel={r} x={x} entity={e}: burn={b} cpu={}",
+                            -c
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Burn trainer ComplEx head scoring (`score_1n_heads`, `score_1n_heads_kge`)
+  added the imaginary product where `Re(h * r * conj(t))` requires subtracting
+  it, training a mis-signed head-prediction objective that the CPU evaluator
+  did not share. Both sites now match the CPU reference; a Burn-vs-CPU score
+  parity test guards the convention.
+
 ### Added
 
 - `tranz train` now writes `manifest.json` beside `entities.tsv` and
