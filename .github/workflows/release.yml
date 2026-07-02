@@ -15,6 +15,16 @@ jobs:
       - run: cargo test --features burn-ndarray
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
+      # Re-running the workflow after a successful publish must not fail on
+      # "crate version already exists" (cargo has no --idempotent yet:
+      # rust-lang/cargo#13397).
+      - name: Check if version already published
+        id: published
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          count=$(curl -sf https://index.crates.io/tr/an/tranz | jq -r '.vers' | grep -Fxc "$version" || true)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
       - run: cargo publish
+        if: steps.published.outputs.count == '0'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
