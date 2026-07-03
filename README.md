@@ -105,13 +105,20 @@ let interned = ds.into_interned();
 
 `tranz train` writes `entities.tsv`, `relations.tsv`, and `manifest.json`.
 The manifest records model family, training config, split sizes, SHA-256
-digests, byte sizes, and evaluation metrics when `--eval` is used.
+digests, byte sizes, and evaluation metrics when `--eval` is used. With the
+`artifact-manifest` feature, `load_embedding_manifest` and
+`verify_embedding_manifest` read the manifest back and check the exported files.
 
 ```rust
-use tranz::io::{export_embeddings, flatten_matrix};
+use tranz::io::{
+    export_embeddings, flatten_matrix, load_embedding_manifest, verify_embedding_manifest,
+};
 
 // Export to w2v TSV
 export_embeddings("output/".as_ref(), &names, &vecs, &rel_names, &rel_vecs).unwrap();
+
+let manifest = load_embedding_manifest("output/".as_ref()).unwrap();
+verify_embedding_manifest("output/".as_ref(), &manifest).unwrap();
 
 // Flat f32 matrix for FAISS/Qdrant
 let flat: Vec<f32> = flatten_matrix(&vecs);

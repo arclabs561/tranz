@@ -312,6 +312,58 @@ pub fn write_embedding_manifest(dir: &Path, manifest: &EmbeddingManifest) -> io:
     file.flush()
 }
 
+/// Read an embedding export manifest from `manifest.json`.
+#[cfg(feature = "artifact-manifest")]
+pub fn load_embedding_manifest(dir: &Path) -> io::Result<EmbeddingManifest> {
+    let file = std::fs::File::open(dir.join("manifest.json"))?;
+    serde_json::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Verify that every artifact named by an embedding manifest still matches its
+/// recorded relative path, byte length, and SHA-256 digest.
+#[cfg(feature = "artifact-manifest")]
+pub fn verify_embedding_manifest(dir: &Path, manifest: &EmbeddingManifest) -> io::Result<()> {
+    for artifact in &manifest.artifacts {
+        let path = safe_artifact_path(dir, &artifact.path)?;
+        let actual_bytes = std::fs::metadata(&path)?.len();
+        if actual_bytes != artifact.bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} byte length mismatch: manifest={}, actual={actual_bytes}",
+                    artifact.path, artifact.bytes
+                ),
+            ));
+        }
+
+        let actual_sha256 = sha256_file(&path)?;
+        if actual_sha256 != artifact.sha256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} sha256 mismatch", artifact.path),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "artifact-manifest")]
+fn safe_artifact_path(dir: &Path, path: &str) -> io::Result<std::path::PathBuf> {
+    let rel = Path::new(path);
+    if path.is_empty()
+        || rel.is_absolute()
+        || rel
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("artifact path must be relative and confined: {path}"),
+        ));
+    }
+    Ok(dir.join(rel))
+}
+
 #[cfg(feature = "artifact-manifest")]
 fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = std::fs::File::open(path)?;
@@ -554,10 +606,71 @@ mod tests {
         };
 
         write_embedding_manifest(dir.path(), &manifest).unwrap();
+        let parsed = load_embedding_manifest(dir.path()).unwrap();
+        verify_embedding_manifest(dir.path(), &parsed).unwrap();
+
         let json = std::fs::read_to_string(dir.path().join("manifest.json")).unwrap();
         let parsed: EmbeddingManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.artifacts.len(), 2);
         assert_eq!(parsed.artifacts[0].path, "entities.tsv");
         assert_eq!(parsed.dataset.entities, 2);
+    }
+
+    #[cfg(feature = "artifact-manifest")]
+    #[test]
+    fn manifest_verification_rejects_bad_hash_and_escape_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("entities.tsv"), b"payload").unwrap();
+
+        let artifact = describe_embedding_artifact(
+            dir.path(),
+            "entities.tsv",
+            "application/vnd.tranz.entity-embeddings+w2v-tsv",
+            "w2v-tsv",
+            1,
+            1,
+        )
+        .unwrap();
+
+        let manifest = EmbeddingManifest {
+            schema: "tranz.embedding-export.v1".to_string(),
+            model: "distmult".to_string(),
+            score_order: "lower_is_better".to_string(),
+            artifacts: vec![artifact.clone()],
+            dataset: ManifestDataset {
+                source_kind: "triple_file".to_string(),
+                source_path: "toy.tsv".to_string(),
+                split: "auto_80_10_10".to_string(),
+                entities: 1,
+                relations: 1,
+                train_triples: 1,
+                valid_triples: 0,
+                test_triples: 0,
+            },
+            training: ManifestTraining {
+                trainer: "burn-1n-adamw".to_string(),
+                backend: "burn-ndarray".to_string(),
+                dim: 1,
+                init_scale: 0.001,
+                lr: 0.001,
+                label_smoothing: 0.0,
+                n3_reg: 0.0,
+                batch_size: 4,
+                epochs: 1,
+                reciprocals: false,
+                final_loss: None,
+            },
+            metrics: None,
+        };
+
+        let mut bad_hash = manifest.clone();
+        bad_hash.artifacts[0].sha256 = "0".repeat(64);
+        let err = verify_embedding_manifest(dir.path(), &bad_hash).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let mut escaped = manifest;
+        escaped.artifacts[0].path = "../entities.tsv".to_string();
+        let err = verify_embedding_manifest(dir.path(), &escaped).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }

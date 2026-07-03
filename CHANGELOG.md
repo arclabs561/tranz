@@ -16,6 +16,9 @@
   `relations.tsv`, recording model family, training config, split sizes,
   SHA-256 artifact digests, byte sizes, and aggregate evaluation metrics when
   `--eval` is used.
+- Added `load_embedding_manifest` and `verify_embedding_manifest` behind the
+  `artifact-manifest` feature to read `manifest.json` back and verify exported
+  artifact paths, byte lengths, and SHA-256 digests.
 
 ## [0.6.0] - 2026-06-28
 
