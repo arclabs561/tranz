@@ -759,6 +759,80 @@ mod tests {
 
     #[test]
     #[cfg(feature = "burn-ndarray")]
+    fn burn_distmult_scores_match_cpu_reference() {
+        // Exact parity between the generic KGE burn scorer (DistMult path) and
+        // the CPU reference: identical weights must produce identical scores.
+        // DistMult's CPU Scorer returns -score_triple (energy, lower = better),
+        // so burn + cpu ~= 0, mirroring the ComplEx contract. DistMult has no
+        // model-specific burn scorer, so only the generic score_1n_kge path
+        // applies.
+        let (ne, nr, dim) = (5usize, 2usize, 4usize);
+        let val = |i: usize| ((i * 37 + 11) % 19) as f32 / 19.0 - 0.5;
+        let ent_rows: Vec<Vec<f32>> = (0..ne)
+            .map(|e| (0..dim).map(|j| val(e * 31 + j)).collect())
+            .collect();
+        let rel_rows: Vec<Vec<f32>> = (0..nr)
+            .map(|r| (0..dim).map(|j| val(r * 53 + j + 7)).collect())
+            .collect();
+        let cpu = crate::DistMult::from_vecs(ent_rows.clone(), rel_rows.clone(), dim);
+
+        let device = test_device();
+        let param = |rows: &[Vec<f32>]| {
+            let cols = rows[0].len();
+            let flat: Vec<f32> = rows.iter().flat_map(|r| r.iter().copied()).collect();
+            Param::initialized(
+                ParamId::new(),
+                Tensor::<TestBackend, 2>::from_data(
+                    burn::tensor::TensorData::new(flat, [rows.len(), cols]),
+                    &device,
+                ),
+            )
+        };
+        let kge = BurnKge::<TestBackend> {
+            entity: param(&ent_rows),
+            relation: param(&rel_rows),
+        };
+
+        let scores =
+            |t: Tensor<TestBackend, 2>| -> Vec<f32> { t.into_data().to_vec::<f32>().unwrap() };
+        let mt = BurnModelType::DistMult;
+        for r in 0..nr {
+            for x in 0..ne {
+                let ids = |i: usize| {
+                    Tensor::<TestBackend, 1, Int>::from_data(
+                        burn::tensor::TensorData::new(vec![i as i64], [1]),
+                        &device,
+                    )
+                };
+                let (rels, xs) = (ids(r), ids(x));
+                let cases = [
+                    (
+                        "kge heads",
+                        scores(score_1n_heads_kge(&kge, mt, dim, &rels, &xs)),
+                        cpu.score_all_heads(r, x),
+                    ),
+                    (
+                        "kge tails",
+                        scores(score_1n_kge(&kge, mt, dim, &xs, &rels)),
+                        cpu.score_all_tails(x, r),
+                    ),
+                ];
+                for (name, burn_scores, cpu_energies) in cases {
+                    assert_eq!(burn_scores.len(), ne);
+                    for (e, (b, c)) in burn_scores.iter().zip(cpu_energies.iter()).enumerate() {
+                        assert!(
+                            (b + c).abs() < 1e-4,
+                            "{name} mismatch at rel={r} x={x} entity={e}: burn={b} cpu={}",
+                            -c
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "burn-ndarray")]
     fn burn_complex_achieves_nonzero_mrr() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)];
         let config = BurnTrainConfig {
@@ -882,6 +956,175 @@ mod tests {
             "Burn DistMult should achieve MRR > 0.3, got {:.4}",
             metrics.mrr
         );
+    }
+
+    #[cfg(feature = "burn-ndarray")]
+    fn kge_ranks_match_cpu_reference(mt: BurnModelType) {
+        // TransE and RotatE burn scorers use squared L2 distance while the CPU
+        // reference uses plain L2 -- a monotonic transform, so exact score
+        // parity is impossible but the induced candidate ORDERING is identical.
+        // Rank parity catches a sign or conjugation error without requiring
+        // score equality.
+        let (ne, nr, dim) = (6usize, 2usize, 4usize);
+        // Low-discrepancy deterministic weights, well-spread so distances are
+        // separated enough that f32 GEMM noise cannot flip a near-tie.
+        let val = |i: usize| {
+            let x = ((i as f64) * 0.618_033_988_749_895).fract();
+            (2.0 * x - 1.0) as f32
+        };
+        let (ent_w, rel_w) = match mt {
+            BurnModelType::TransE => (dim, dim),
+            BurnModelType::RotatE => (2 * dim, dim),
+            other => panic!("rank-parity helper is for distance models, not {other:?}"),
+        };
+        let ent_rows: Vec<Vec<f32>> = (0..ne)
+            .map(|e| (0..ent_w).map(|j| val(e * 31 + j + 1)).collect())
+            .collect();
+        let rel_rows: Vec<Vec<f32>> = (0..nr)
+            .map(|r| (0..rel_w).map(|j| val(r * 53 + j + 7)).collect())
+            .collect();
+
+        let cpu: Box<dyn Scorer + Sync> = match mt {
+            BurnModelType::TransE => Box::new(crate::TransE::from_vecs(
+                ent_rows.clone(),
+                rel_rows.clone(),
+                dim,
+            )),
+            BurnModelType::RotatE => Box::new(crate::RotatE::from_vecs(
+                ent_rows.clone(),
+                rel_rows.clone(),
+                dim,
+                12.0,
+            )),
+            other => panic!("rank-parity helper is for distance models, not {other:?}"),
+        };
+
+        let device = test_device();
+        let param = |rows: &[Vec<f32>]| {
+            let cols = rows[0].len();
+            let flat: Vec<f32> = rows.iter().flat_map(|r| r.iter().copied()).collect();
+            Param::initialized(
+                ParamId::new(),
+                Tensor::<TestBackend, 2>::from_data(
+                    burn::tensor::TensorData::new(flat, [rows.len(), cols]),
+                    &device,
+                ),
+            )
+        };
+        let kge = BurnKge::<TestBackend> {
+            entity: param(&ent_rows),
+            relation: param(&rel_rows),
+        };
+
+        let scores =
+            |t: Tensor<TestBackend, 2>| -> Vec<f32> { t.into_data().to_vec::<f32>().unwrap() };
+        // Best-to-worst entity order. Burn: higher score first. CPU: lower
+        // distance first. Ties broken by ascending entity index in both.
+        let rank_by = |v: &[f32], higher_is_better: bool| -> Vec<usize> {
+            let mut idx: Vec<usize> = (0..v.len()).collect();
+            idx.sort_by(|&a, &b| {
+                let ord = if higher_is_better {
+                    v[b].total_cmp(&v[a])
+                } else {
+                    v[a].total_cmp(&v[b])
+                };
+                ord.then(a.cmp(&b))
+            });
+            idx
+        };
+
+        for r in 0..nr {
+            for x in 0..ne {
+                let ids = |i: usize| {
+                    Tensor::<TestBackend, 1, Int>::from_data(
+                        burn::tensor::TensorData::new(vec![i as i64], [1]),
+                        &device,
+                    )
+                };
+                let (rels, xs) = (ids(r), ids(x));
+
+                let burn_tails = scores(score_1n_kge(&kge, mt, dim, &xs, &rels));
+                let cpu_tails = cpu.score_all_tails(x, r);
+                assert_eq!(
+                    rank_by(&burn_tails, true),
+                    rank_by(&cpu_tails, false),
+                    "{mt:?} tail ordering at rel={r} x={x}: burn={burn_tails:?} cpu={cpu_tails:?}"
+                );
+
+                let burn_heads = scores(score_1n_heads_kge(&kge, mt, dim, &rels, &xs));
+                let cpu_heads = cpu.score_all_heads(r, x);
+                assert_eq!(
+                    rank_by(&burn_heads, true),
+                    rank_by(&cpu_heads, false),
+                    "{mt:?} head ordering at rel={r} x={x}: burn={burn_heads:?} cpu={cpu_heads:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "burn-ndarray")]
+    fn burn_transe_ranks_match_cpu_reference() {
+        kge_ranks_match_cpu_reference(BurnModelType::TransE);
+    }
+
+    #[test]
+    #[cfg(feature = "burn-ndarray")]
+    fn burn_rotate_ranks_match_cpu_reference() {
+        kge_ranks_match_cpu_reference(BurnModelType::RotatE);
+    }
+
+    #[cfg(feature = "burn-ndarray")]
+    fn kge_achieves_nonzero_mrr(mt: BurnModelType) {
+        // The chain 0->1->2->3->4 under a single relation is trivially learnable
+        // by a translation/rotation model, so a trained burn scorer should rank
+        // the true entity near the top (MRR > 0.3). Adapted from
+        // burn_distmult_achieves_nonzero_mrr for the generic trainer.
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)];
+        let config = BurnTrainConfig {
+            dim: 32,
+            epochs: 300,
+            batch_size: 4,
+            lr: 0.01,
+            ..BurnTrainConfig::default()
+        };
+        let result = train_kge::<TestBackend>(&triples, 5, 1, mt, &config, &test_device());
+        let scorer = result.to_scorer();
+
+        let ds = crate::dataset::Dataset::new(
+            triples
+                .iter()
+                .map(|t| {
+                    crate::dataset::Triple::new(
+                        t.head.to_string(),
+                        t.relation.to_string(),
+                        t.tail.to_string(),
+                    )
+                })
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .into_interned();
+        let filter = crate::dataset::FilterIndex::from_dataset(&ds);
+        let metrics = crate::eval::evaluate_link_prediction(scorer.as_ref(), &triples, &filter, 5);
+        assert!(
+            metrics.mrr > 0.3,
+            "Burn {mt:?} should achieve MRR > 0.3, got {:.4}",
+            metrics.mrr
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "burn-ndarray")]
+    fn burn_transe_achieves_nonzero_mrr() {
+        kge_achieves_nonzero_mrr(BurnModelType::TransE);
+    }
+
+    #[test]
+    #[cfg(feature = "burn-ndarray")]
+    fn burn_rotate_achieves_nonzero_mrr() {
+        kge_achieves_nonzero_mrr(BurnModelType::RotatE);
     }
 
     #[test]
