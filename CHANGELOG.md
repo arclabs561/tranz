@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.2] - 2026-07-04
+
+### Added
+
+- `TemporalScorer::score_all_tails_over`: per-entity minimum energy over a
+  timestamp set (the existential fold behind timestamp-set hops), with a
+  rayon-parallel `TComplEx` override. Not-during hops on ICEWS05-15's
+  4017-day axis are the hot path this exists for.
+
 ## [0.7.1] - 2026-07-04
 
 ### Added
