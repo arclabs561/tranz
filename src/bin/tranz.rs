@@ -66,7 +66,9 @@ USAGE:
 Trains TComplEx on quad files (head \\t relation \\t tail \\t timestamp per
 line; train.txt/valid.txt/test.txt in --data). Same knobs as train minus
 --model/--triples, plus:
-    --time-smooth <F>     Temporal smoothness coefficient (default: 0.01)
+    --time-smooth <F>     Temporal smoothness Λ₃ coefficient (default: 0.01)
+    --n3-reg <F>          Weighted nuclear-3 (Ω³) coefficient (default: 0)
+    --eval-split <S>      test (default) or valid, for --eval
 Exports entities.tsv, relations.tsv, times.tsv (w2v format).
 
 USAGE:
@@ -574,10 +576,12 @@ fn cmd_train_temporal(args: &[String]) {
     let mut batch_size = 512_usize;
     let mut lr = 0.001_f64;
     let mut label_smoothing = 0.0_f64;
+    let mut n3_reg = 0.0_f64;
     let mut time_smooth = 0.01_f64;
     let mut reciprocals = false;
     let mut output_dir = PathBuf::from("output");
     let mut do_eval = false;
+    let mut eval_split = "test".to_string();
 
     let mut i = 0;
     while i < args.len() {
@@ -614,6 +618,10 @@ fn cmd_train_temporal(args: &[String]) {
                 i += 1;
                 time_smooth = args[i].parse().unwrap();
             }
+            "--n3-reg" => {
+                i += 1;
+                n3_reg = args[i].parse().unwrap();
+            }
             "--reciprocals" => {
                 reciprocals = true;
             }
@@ -623,6 +631,10 @@ fn cmd_train_temporal(args: &[String]) {
             }
             "--eval" => {
                 do_eval = true;
+            }
+            "--eval-split" => {
+                i += 1;
+                eval_split = args[i].clone();
             }
             other => {
                 eprintln!("Unknown argument: {other}");
@@ -661,14 +673,14 @@ fn cmd_train_temporal(args: &[String]) {
         init_scale,
         lr,
         label_smoothing,
-        n3_reg: 0.0,
+        n3_reg,
         batch_size,
         epochs,
         log_interval: 0,
     };
     eprintln!("Command: tranz train-temporal {}", args.join(" "));
     eprintln!(
-        "Training TComplEx dim={dim} lr={lr} epochs={epochs} time-smooth={time_smooth} (Burn 1-N / AdamW)"
+        "Training TComplEx dim={dim} lr={lr} epochs={epochs} n3-reg={n3_reg} time-smooth={time_smooth} (Burn 1-N / AdamW)"
     );
     #[cfg(feature = "burn-wgpu")]
     let device = burn_wgpu::WgpuDevice::default();
@@ -710,10 +722,15 @@ fn cmd_train_temporal(args: &[String]) {
     export("times.tsv", &ds.times, &result.time_vecs);
     eprintln!("Wrote entities.tsv, relations.tsv, times.tsv");
 
-    if do_eval && !ds.test.is_empty() {
-        eprintln!("Evaluating on test set ({} quads)...", ds.test.len());
+    if do_eval {
+        let split = if eval_split == "valid" {
+            &ds.valid
+        } else {
+            &ds.test
+        };
+        eprintln!("Evaluating on {eval_split} set ({} quads)...", split.len());
         let filter = TemporalFilterIndex::from_quads(&ds.all_quads());
-        let m = evaluate_temporal_link_prediction(&result.to_scorer(), &ds.test, &filter);
+        let m = evaluate_temporal_link_prediction(&result.to_scorer(), split, &filter);
         println!("MRR:      {:.4}", m.mrr);
         println!("  head:   {:.4}", m.head_mrr);
         println!("  tail:   {:.4}", m.tail_mrr);

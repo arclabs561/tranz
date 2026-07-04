@@ -209,6 +209,17 @@ pub trait TemporalScorer: Sync {
             .map(|h| self.score(h, relation, tail, time))
             .collect()
     }
+
+    /// Score all timestamps for `(head, relation, tail, ?)`: the
+    /// timestamp-answering direction (TFLEX's time projection). The
+    /// time-tube cross-entropy of Lacroix et al. (their Eq. 7) is this
+    /// direction's training-side counterpart; the default 1-N objective
+    /// only enforces rankings along the entity tubes.
+    fn score_all_times(&self, head: usize, relation: usize, tail: usize) -> Vec<f32> {
+        (0..self.num_timestamps())
+            .map(|tau| self.score(head, relation, tail, tau))
+            .collect()
+    }
 }
 
 /// TComplEx (Lacroix et al., ICLR 2020): `-Re(<h, r ∘ w_τ, conj(t)>)`.
@@ -311,6 +322,34 @@ impl TemporalScorer for TComplEx {
                 let mut s = 0.0_f32;
                 for i in 0..d {
                     s += c[i] * t[i] + c[i + d] * t[i + d];
+                }
+                -s
+            })
+            .collect()
+    }
+
+    /// Batch time scoring with `m = h ∘ r ∘ conj(t)` hoisted:
+    /// `Re(<h, r ∘ w, conj(t)>) = m_re · w_re − m_im · w_im`.
+    fn score_all_times(&self, head: usize, relation: usize, tail: usize) -> Vec<f32> {
+        let d = self.dim;
+        let (h, r, t) = (
+            &self.entity[head],
+            &self.relation[relation],
+            &self.entity[tail],
+        );
+        let mut m = vec![0.0_f32; 2 * d];
+        for i in 0..d {
+            let hr_re = h[i] * r[i] - h[i + d] * r[i + d];
+            let hr_im = h[i] * r[i + d] + h[i + d] * r[i];
+            m[i] = hr_re * t[i] + hr_im * t[i + d];
+            m[i + d] = hr_im * t[i] - hr_re * t[i + d];
+        }
+        self.time
+            .iter()
+            .map(|w| {
+                let mut s = 0.0_f32;
+                for i in 0..d {
+                    s += m[i] * w[i] - m[i + d] * w[i + d];
                 }
                 -s
             })
@@ -474,6 +513,9 @@ mod tests {
             }
             for (e, &b) in m.score_all_heads(r, h, tau).iter().enumerate() {
                 assert!((b - m.score(e, r, h, tau)).abs() < 1e-5);
+            }
+            for (tt, &b) in m.score_all_times(h, r, tau).iter().enumerate() {
+                assert!((b - m.score(h, r, tau, tt)).abs() < 1e-5);
             }
         }
     }

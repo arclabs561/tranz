@@ -3,9 +3,9 @@
 //! Same recipe as the static [`train_kge`](crate::burn_train::train_kge)
 //! trainer (1-N cross-entropy over all entities, both directions, AdamW,
 //! optional label smoothing) plus the temporal pieces: a third embedding
-//! table for timestamps, `q = r ∘ w_τ` in place of the relation, and a
-//! temporal smoothness penalty `λ · mean(‖w_{τ+1} − w_τ‖²)` that ties
-//! neighboring timestamps together (Lacroix et al., ICLR 2020).
+//! table for timestamps, `q = r ∘ w_τ` in place of the relation, and the
+//! paper's two regularizers (weighted nuclear-3 Ω³ and the Λ₃ temporal
+//! smoothness prior; Lacroix et al., ICLR 2020, Eqs. 4-5).
 
 use burn::module::{Module, Param, ParamId};
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
@@ -117,9 +117,19 @@ fn score_1n_heads<B: Backend>(
 
 /// Train TComplEx with 1-N (1vsAll) scoring in both directions.
 ///
-/// `time_smooth` is the temporal smoothness coefficient λ (0 disables).
-/// Timestamp ids must be in chronological order (the loader guarantees
-/// this) or the smoothness penalty ties the wrong neighbors.
+/// Two regularizers from Lacroix et al. (ICLR 2020), both off at `0`:
+///
+/// - `config.n3_reg`: the weighted nuclear-3 variational form Ω³ (their
+///   Eq. 4): per sampled quad, `(λ/3)(‖h‖₃³ + ‖t‖₃³ + ‖r ∘ w‖₃³)` with the
+///   complex modulus per component. The (relation, timestamp) pair is
+///   penalized JOINTLY as one factor: unfolding the order-4 tensor along
+///   the predicate and time modes makes `r ∘ w` a single mode-row, which
+///   weights by the joint (predicate, timestamp) marginal rather than the
+///   product of marginals (their Appendix 8.1/8.3).
+/// - `time_smooth`: the temporal smoothness prior Λ_p (their Eq. 5) with
+///   `p = 3` to match Ω³'s order: `λ_t/(|T|−1) · Σ |t_{i+1} − t_i|³`.
+///   Timestamp ids must be in chronological order (the loader guarantees
+///   this) or the penalty ties the wrong neighbors.
 pub fn train_tcomplex<B: AutodiffBackend>(
     train_quads: &[QuadIds],
     num_entities: usize,
@@ -213,11 +223,35 @@ pub fn train_tcomplex<B: AutodiffBackend>(
             } else {
                 nll
             };
+            if config.n3_reg > 0.0 {
+                // Ω³ on the sampled rows; q = r ∘ w is one joint factor.
+                let h = current.entity.val().select(0, heads.clone());
+                let t = current.entity.val().select(0, tails.clone());
+                let r = current.relation.val().select(0, rels.clone());
+                let w = current.time.val().select(0, times.clone());
+                let (q_re, q_im) = complex_mul(r, w, config.dim);
+                let mod3 = |re: Tensor<B, 2>, im: Tensor<B, 2>| {
+                    (re.powf_scalar(2.0) + im.powf_scalar(2.0))
+                        .add_scalar(1e-12)
+                        .sqrt()
+                        .powf_scalar(3.0)
+                        .sum_dim(1)
+                };
+                let (h_re, h_im) = re_im(h, config.dim);
+                let (t_re, t_im) = re_im(t, config.dim);
+                let omega3 = (mod3(h_re, h_im) + mod3(t_re, t_im) + mod3(q_re, q_im)).mean();
+                loss = loss + omega3.mul_scalar(config.n3_reg / 3.0);
+            }
             if time_smooth > 0.0 && num_timestamps > 1 {
+                // Λ₃ on the discrete derivative of the timestamp table.
                 let w = current.time.val();
                 let later = w.clone().slice([1..num_timestamps, 0..cols]);
                 let earlier = w.slice([0..num_timestamps - 1, 0..cols]);
-                let smooth = (later - earlier).powf_scalar(2.0).mean();
+                let smooth = (later - earlier)
+                    .abs()
+                    .powf_scalar(3.0)
+                    .sum()
+                    .div_scalar((num_timestamps - 1) as f32);
                 loss = loss + smooth.mul_scalar(time_smooth);
             }
 
