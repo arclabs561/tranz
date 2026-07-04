@@ -469,13 +469,11 @@ mod tests {
         let d = 4;
         let m = TComplEx::from_vecs(rows(5, d, 0), rows(2, d, 7), rows(3, d, 13), d);
         for (h, r, tau) in [(0, 0, 0), (2, 1, 1), (4, 0, 2)] {
-            let batch = m.score_all_tails(h, r, tau);
-            for t in 0..5 {
-                assert!((batch[t] - m.score(h, r, t, tau)).abs() < 1e-5);
+            for (t, &b) in m.score_all_tails(h, r, tau).iter().enumerate() {
+                assert!((b - m.score(h, r, t, tau)).abs() < 1e-5);
             }
-            let batch = m.score_all_heads(r, h, tau);
-            for e in 0..5 {
-                assert!((batch[e] - m.score(e, r, h, tau)).abs() < 1e-5);
+            for (e, &b) in m.score_all_heads(r, h, tau).iter().enumerate() {
+                assert!((b - m.score(e, r, h, tau)).abs() < 1e-5);
             }
         }
     }
