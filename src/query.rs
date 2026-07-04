@@ -8,6 +8,10 @@
 //! Based on Arakelyan et al. (2021), "Complex Query Answering with Neural
 //! Link Predictors" (ICLR, Outstanding Paper).
 //!
+//! The `heyting` crate generalizes these connectives over any scorer (this
+//! crate's models plug in through its adapter); this module remains the
+//! self-contained point-model implementation.
+//!
 //! ## Supported query types
 //!
 //! | Pattern | Structure | Example |
