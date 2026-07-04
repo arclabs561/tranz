@@ -267,6 +267,7 @@ fn cmd_train(args: &[String]) {
     let mut batch_size = 512_usize;
     let mut lr = 0.001_f64;
     let mut label_smoothing = 0.0_f64;
+    let mut n3_reg = 0.0_f64;
     let mut reciprocals = false;
     let mut output_dir = PathBuf::from("output");
     let mut do_eval = false;
@@ -318,6 +319,10 @@ fn cmd_train(args: &[String]) {
             "--label-smoothing" => {
                 i += 1;
                 label_smoothing = args[i].parse().unwrap();
+            }
+            "--n3-reg" => {
+                i += 1;
+                n3_reg = args[i].parse().unwrap();
             }
             "--reciprocals" => {
                 reciprocals = true;
@@ -390,12 +395,15 @@ fn cmd_train(args: &[String]) {
         interned.test.len(),
     );
 
+    if n3_reg > 0.0 && matches!(model_type, BurnModelType::TransE | BurnModelType::RotatE) {
+        eprintln!("warning: --n3-reg is ignored for distance models (TransE/RotatE)");
+    }
     let config = BurnTrainConfig {
         dim,
         init_scale,
         lr,
         label_smoothing,
-        n3_reg: 0.0,
+        n3_reg,
         batch_size,
         epochs,
         log_interval: 0,

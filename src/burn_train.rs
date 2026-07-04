@@ -38,7 +38,14 @@ pub struct BurnTrainConfig {
     pub lr: f64,
     /// Label smoothing epsilon. 0 = no smoothing.
     pub label_smoothing: f64,
-    /// N3 regularization coefficient. 0 = disabled.
+    /// Weighted nuclear-3 (Ω³) coefficient, Lacroix et al. (ICML 2018):
+    /// per sampled triple, `(λ/3)(‖h‖₃³ + ‖r‖₃³ + ‖t‖₃³)` on the sampled
+    /// rows (complex modulus per component for ComplEx). Applied by
+    /// [`train_kge`] for the CP-family models (ComplEx, DistMult); ignored
+    /// for the distance models (TransE, RotatE), where it is not the
+    /// canonical regularizer. 0 = disabled. Pair with `init_scale` ~1e-2:
+    /// at tiny init the origin is a fixed point of the multilinear score
+    /// and the N3 pull wins.
     pub n3_reg: f64,
     /// Batch size.
     pub batch_size: usize,
@@ -574,12 +581,35 @@ pub fn train_kge<B: AutodiffBackend>(
                 .neg()
                 .mean();
             let nll = (t_nll + h_nll) / 2.0;
-            let loss = if eps > 0.0 {
+            let mut loss = if eps > 0.0 {
                 let uniform = (tail_lp.mean().neg() + head_lp.mean().neg()) / 2.0;
                 nll * (1.0 - eps) + uniform * eps
             } else {
                 nll
             };
+            if config.n3_reg > 0.0
+                && matches!(model_type, BurnModelType::ComplEx | BurnModelType::DistMult)
+            {
+                let h = current.entity.val().select(0, heads.clone());
+                let t = current.entity.val().select(0, tails.clone());
+                let r = current.relation.val().select(0, rels.clone());
+                let cube = |x: Tensor<B, 2>, complex: bool| {
+                    if complex {
+                        let d = x.dims()[1] / 2;
+                        let (re, im) = re_im(x, d);
+                        (re.powf_scalar(2.0) + im.powf_scalar(2.0))
+                            .add_scalar(1e-12)
+                            .sqrt()
+                            .powf_scalar(3.0)
+                            .sum_dim(1)
+                    } else {
+                        x.abs().powf_scalar(3.0).sum_dim(1)
+                    }
+                };
+                let complex = model_type == BurnModelType::ComplEx;
+                let omega3 = (cube(h, complex) + cube(t, complex) + cube(r, complex)).mean();
+                loss = loss + omega3.mul_scalar(config.n3_reg / 3.0);
+            }
 
             let loss_inner = loss.clone().inner();
             let grads = GradientsParams::from_grads(loss.backward(), &current);
