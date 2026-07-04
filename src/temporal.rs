@@ -220,6 +220,27 @@ pub trait TemporalScorer: Sync {
             .map(|tau| self.score(head, relation, tail, tau))
             .collect()
     }
+
+    /// Per-entity MINIMUM energy over a set of timestamps: the existential
+    /// tail scoring behind timestamp-set hops ("`(head, relation, ?)` holds
+    /// at SOME `τ ∈ times`"). Empty `times` returns `f32::INFINITY` per
+    /// entity (the identity of min: no admissible timestamp). Implementors
+    /// with batch structure should override; the not-during sets of a long
+    /// time axis make this the hot path of temporal query answering.
+    fn score_all_tails_over(&self, head: usize, relation: usize, times: &[usize]) -> Vec<f32> {
+        let mut best = vec![f32::INFINITY; self.num_entities()];
+        for &tau in times {
+            for (b, s) in best
+                .iter_mut()
+                .zip(self.score_all_tails(head, relation, tau))
+            {
+                if s < *b {
+                    *b = s;
+                }
+            }
+        }
+        best
+    }
 }
 
 /// TComplEx (Lacroix et al., ICLR 2020): `-Re(<h, r ∘ w_τ, conj(t)>)`.
@@ -326,6 +347,42 @@ impl TemporalScorer for TComplEx {
                 -s
             })
             .collect()
+    }
+
+    /// Existential batch scoring, parallelized over timestamps: rayon
+    /// chunks fold per-chunk minima with the hoisted per-τ path, then the
+    /// chunks reduce elementwise. Same values as the default fold; the
+    /// not-during sets of a long axis (ICEWS05-15: ~4010 of 4017 days per
+    /// hop) are the hot path this exists for.
+    fn score_all_tails_over(&self, head: usize, relation: usize, times: &[usize]) -> Vec<f32> {
+        let n = self.num_entities();
+        times
+            .par_chunks(64.max(times.len() / 32))
+            .map(|chunk| {
+                let mut best = vec![f32::INFINITY; n];
+                for &tau in chunk {
+                    for (b, s) in best
+                        .iter_mut()
+                        .zip(self.score_all_tails(head, relation, tau))
+                    {
+                        if s < *b {
+                            *b = s;
+                        }
+                    }
+                }
+                best
+            })
+            .reduce(
+                || vec![f32::INFINITY; n],
+                |mut a, b| {
+                    for (x, y) in a.iter_mut().zip(b) {
+                        if y < *x {
+                            *x = y;
+                        }
+                    }
+                    a
+                },
+            )
     }
 
     /// Batch time scoring with `m = h ∘ r ∘ conj(t)` hoisted:
@@ -518,6 +575,18 @@ mod tests {
                 assert!((b - m.score(h, r, tau, tt)).abs() < 1e-5);
             }
         }
+
+        // The parallel existential override matches a pointwise min-fold.
+        let times: Vec<usize> = vec![0, 2];
+        let batch = m.score_all_tails_over(0, 1, &times);
+        for (t, &b) in batch.iter().enumerate() {
+            let want = m.score(0, 1, t, 0).min(m.score(0, 1, t, 2));
+            assert!((b - want).abs() < 1e-5, "existential parity at {t}");
+        }
+        assert!(m
+            .score_all_tails_over(0, 1, &[])
+            .iter()
+            .all(|&s| s == f32::INFINITY));
     }
 
     #[test]
