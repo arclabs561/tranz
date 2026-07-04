@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `BurnTrainConfig::n3_reg` was declared but never applied by the static
+  trainer (`train_kge`); it now applies the Lacroix et al. (ICML 2018)
+  weighted nuclear-3 penalty for the CP-family models (ComplEx, DistMult)
+  and is ignored with a CLI warning for the distance models. `tranz train`
+  gains `--n3-reg`.
+
 ## [0.7.2] - 2026-07-04
 
 ### Added
