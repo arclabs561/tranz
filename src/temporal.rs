@@ -287,6 +287,63 @@ impl TemporalScorer for TComplEx {
     fn num_timestamps(&self) -> usize {
         self.time.len()
     }
+
+    /// Batch tail scoring with the time-rotated relation `q = r ∘ w`
+    /// hoisted out of the per-entity loop.
+    fn score_all_tails(&self, head: usize, relation: usize, time: usize) -> Vec<f32> {
+        let d = self.dim;
+        let (h, r, w) = (
+            &self.entity[head],
+            &self.relation[relation],
+            &self.time[time],
+        );
+        // c = h ∘ (r ∘ w): Re(<h, q, conj(t)>) = c_re · t_re + c_im · t_im.
+        let mut c = vec![0.0_f32; 2 * d];
+        for i in 0..d {
+            let q_re = r[i] * w[i] - r[i + d] * w[i + d];
+            let q_im = r[i] * w[i + d] + r[i + d] * w[i];
+            c[i] = h[i] * q_re - h[i + d] * q_im;
+            c[i + d] = h[i] * q_im + h[i + d] * q_re;
+        }
+        self.entity
+            .iter()
+            .map(|t| {
+                let mut s = 0.0_f32;
+                for i in 0..d {
+                    s += c[i] * t[i] + c[i + d] * t[i + d];
+                }
+                -s
+            })
+            .collect()
+    }
+
+    /// Batch head scoring with `c = (r ∘ w) ∘ conj(t)` hoisted:
+    /// `Re(<h, q, conj(t)>) = h_re · c_re − h_im · c_im`.
+    fn score_all_heads(&self, relation: usize, tail: usize, time: usize) -> Vec<f32> {
+        let d = self.dim;
+        let (r, w, t) = (
+            &self.relation[relation],
+            &self.time[time],
+            &self.entity[tail],
+        );
+        let mut c = vec![0.0_f32; 2 * d];
+        for i in 0..d {
+            let q_re = r[i] * w[i] - r[i + d] * w[i + d];
+            let q_im = r[i] * w[i + d] + r[i + d] * w[i];
+            c[i] = q_re * t[i] + q_im * t[i + d];
+            c[i + d] = q_im * t[i] - q_re * t[i + d];
+        }
+        self.entity
+            .iter()
+            .map(|h| {
+                let mut s = 0.0_f32;
+                for i in 0..d {
+                    s += h[i] * c[i] - h[i + d] * c[i + d];
+                }
+                -s
+            })
+            .collect()
+    }
 }
 
 /// Time-aware filter index: known tails of `(h, r, τ)` and known heads of
@@ -398,6 +455,29 @@ mod tests {
         );
         let e = m.score(0, 0, 1, 0);
         assert!((e - 2.5).abs() < 1e-6, "energy {e}");
+    }
+
+    /// The hoisted batch paths must agree with the per-entity score loop.
+    #[test]
+    fn batch_scoring_matches_pointwise() {
+        let val = |i: usize| ((i * 37 + 11) % 19) as f32 / 19.0 - 0.5;
+        let rows = |n: usize, d: usize, seed: usize| -> Vec<Vec<f32>> {
+            (0..n)
+                .map(|k| (0..2 * d).map(|j| val(seed + k * 31 + j)).collect())
+                .collect()
+        };
+        let d = 4;
+        let m = TComplEx::from_vecs(rows(5, d, 0), rows(2, d, 7), rows(3, d, 13), d);
+        for (h, r, tau) in [(0, 0, 0), (2, 1, 1), (4, 0, 2)] {
+            let batch = m.score_all_tails(h, r, tau);
+            for t in 0..5 {
+                assert!((batch[t] - m.score(h, r, t, tau)).abs() < 1e-5);
+            }
+            let batch = m.score_all_heads(r, h, tau);
+            for e in 0..5 {
+                assert!((batch[e] - m.score(e, r, h, tau)).abs() < 1e-5);
+            }
+        }
     }
 
     #[test]
