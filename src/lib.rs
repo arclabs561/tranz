@@ -12,6 +12,8 @@
 //! - [`RotatE`]: `head * relation ~ tail` in complex space (Sun et al., 2019)
 //! - [`ComplEx`]: Hermitian dot product in complex space (Trouillon et al., 2016)
 //! - [`DistMult`]: diagonal bilinear in real space (Yang et al., 2015)
+//! - [`temporal::TComplEx`]: ComplEx over quads `(h, r, t, τ)` with timestamp
+//!   embeddings (Lacroix et al., 2020)
 //!
 //! ## Feature flags
 //!
@@ -23,11 +25,14 @@
 #![warn(missing_docs)]
 
 #[cfg(any(feature = "burn-ndarray", feature = "burn-wgpu"))]
+pub mod burn_temporal;
+#[cfg(any(feature = "burn-ndarray", feature = "burn-wgpu"))]
 pub mod burn_train;
 pub mod dataset;
 pub mod eval;
 pub mod io;
 pub mod query;
+pub mod temporal;
 
 /// Errors from tranz operations.
 #[derive(Debug, thiserror::Error)]

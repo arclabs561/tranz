@@ -23,6 +23,7 @@ fn main() {
 
     match args[1].as_str() {
         "train" => cmd_train(&args[2..]),
+        "train-temporal" => cmd_train_temporal(&args[2..]),
         "predict" => cmd_predict(&args[2..]),
         "eval" => cmd_eval(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
@@ -58,6 +59,15 @@ TRAIN OPTIONS:
     --reciprocals         Add reciprocal relations before training
     --output <DIR>        Output directory for embeddings (default: output/)
     --eval                Evaluate on test set after training
+
+USAGE:
+    tranz train-temporal [OPTIONS]
+
+Trains TComplEx on quad files (head \\t relation \\t tail \\t timestamp per
+line; train.txt/valid.txt/test.txt in --data). Same knobs as train minus
+--model/--triples, plus:
+    --time-smooth <F>     Temporal smoothness coefficient (default: 0.01)
+Exports entities.tsv, relations.tsv, times.tsv (w2v format).
 
 USAGE:
     tranz predict [OPTIONS]
@@ -183,7 +193,7 @@ fn cmd_predict(args: &[String]) {
             println!(
                 "  {:>3}. {:<30} score={:.4}",
                 rank + 1,
-                &ent_names[*ent_id],
+                ent_names[*ent_id],
                 score
             );
         }
@@ -200,7 +210,7 @@ fn cmd_predict(args: &[String]) {
             println!(
                 "  {:>3}. {:<30} score={:.4}",
                 rank + 1,
-                &ent_names[*ent_id],
+                ent_names[*ent_id],
                 score
             );
         }
@@ -220,7 +230,7 @@ fn cmd_predict(args: &[String]) {
             println!(
                 "  {:>3}. {:<30} score={:.4}",
                 rank + 1,
-                &rel_names[*rel_id],
+                rel_names[*rel_id],
                 score
             );
         }
@@ -542,6 +552,176 @@ fn cmd_train(args: &[String]) {
         std::process::exit(1);
     });
     eprintln!("Wrote manifest.json");
+}
+
+fn cmd_train_temporal(args: &[String]) {
+    use tranz::burn_temporal::train_tcomplex;
+    use tranz::burn_train::BurnTrainConfig;
+    use tranz::io::write_w2v_tsv;
+    use tranz::temporal::{
+        evaluate_temporal_link_prediction, load_temporal_dataset, TemporalFilterIndex,
+    };
+
+    #[cfg(feature = "burn-wgpu")]
+    type TrainB = burn::backend::Autodiff<burn_wgpu::Wgpu>;
+    #[cfg(not(feature = "burn-wgpu"))]
+    type TrainB = burn::backend::Autodiff<burn_ndarray::NdArray>;
+
+    let mut data_dir: Option<PathBuf> = None;
+    let mut dim = 200_usize;
+    let mut init_scale = 1e-3_f64;
+    let mut epochs = 500_usize;
+    let mut batch_size = 512_usize;
+    let mut lr = 0.001_f64;
+    let mut label_smoothing = 0.0_f64;
+    let mut time_smooth = 0.01_f64;
+    let mut reciprocals = false;
+    let mut output_dir = PathBuf::from("output");
+    let mut do_eval = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--data" => {
+                i += 1;
+                data_dir = Some(PathBuf::from(&args[i]));
+            }
+            "--dim" => {
+                i += 1;
+                dim = args[i].parse().unwrap();
+            }
+            "--init-scale" => {
+                i += 1;
+                init_scale = args[i].parse().unwrap();
+            }
+            "--epochs" => {
+                i += 1;
+                epochs = args[i].parse().unwrap();
+            }
+            "--batch-size" => {
+                i += 1;
+                batch_size = args[i].parse().unwrap();
+            }
+            "--lr" => {
+                i += 1;
+                lr = args[i].parse().unwrap();
+            }
+            "--label-smoothing" => {
+                i += 1;
+                label_smoothing = args[i].parse().unwrap();
+            }
+            "--time-smooth" => {
+                i += 1;
+                time_smooth = args[i].parse().unwrap();
+            }
+            "--reciprocals" => {
+                reciprocals = true;
+            }
+            "--output" => {
+                i += 1;
+                output_dir = PathBuf::from(&args[i]);
+            }
+            "--eval" => {
+                do_eval = true;
+            }
+            other => {
+                eprintln!("Unknown argument: {other}");
+                eprintln!("Run `tranz help` for the supported flags.");
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let Some(dir) = data_dir else {
+        eprintln!("Specify --data <DIR> with train.txt/valid.txt/test.txt quad files");
+        std::process::exit(1);
+    };
+    eprintln!("Loading temporal dataset from {}", dir.display());
+    let mut ds = load_temporal_dataset(&dir).unwrap_or_else(|e| {
+        eprintln!("Failed: {e}");
+        std::process::exit(1);
+    });
+    if reciprocals {
+        eprintln!("Adding reciprocal relations");
+        ds.add_reciprocals();
+    }
+    eprintln!(
+        "Entities: {}, Relations: {}, Timestamps: {}, Train: {}, Valid: {}, Test: {}",
+        ds.num_entities(),
+        ds.num_relations(),
+        ds.num_timestamps(),
+        ds.train.len(),
+        ds.valid.len(),
+        ds.test.len(),
+    );
+
+    let config = BurnTrainConfig {
+        dim,
+        init_scale,
+        lr,
+        label_smoothing,
+        n3_reg: 0.0,
+        batch_size,
+        epochs,
+        log_interval: 0,
+    };
+    eprintln!("Command: tranz train-temporal {}", args.join(" "));
+    eprintln!(
+        "Training TComplEx dim={dim} lr={lr} epochs={epochs} time-smooth={time_smooth} (Burn 1-N / AdamW)"
+    );
+    #[cfg(feature = "burn-wgpu")]
+    let device = burn_wgpu::WgpuDevice::default();
+    #[cfg(not(feature = "burn-wgpu"))]
+    let device = burn_ndarray::NdArrayDevice::Cpu;
+    let start = Instant::now();
+    let result = train_tcomplex::<TrainB>(
+        &ds.train,
+        ds.num_entities(),
+        ds.num_relations(),
+        ds.num_timestamps(),
+        &config,
+        time_smooth,
+        &device,
+    );
+    eprintln!(
+        "Training complete in {:.1}s, final loss: {:.4}",
+        start.elapsed().as_secs_f32(),
+        result.losses.last().unwrap(),
+    );
+
+    eprintln!("Exporting embeddings to {}", output_dir.display());
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let names = |v: &tranz::dataset::Vocab| -> Vec<String> {
+        (0..v.len())
+            .map(|i| v.get(i).unwrap().to_string())
+            .collect()
+    };
+    let export = |file: &str, names: &[String], vecs: &[Vec<f32>]| {
+        let mut f = std::fs::File::create(output_dir.join(file)).unwrap();
+        write_w2v_tsv(&mut f, names, vecs).unwrap();
+    };
+    export("entities.tsv", &names(&ds.entities), &result.entity_vecs);
+    export(
+        "relations.tsv",
+        &names(&ds.relations),
+        &result.relation_vecs,
+    );
+    export("times.tsv", &ds.times, &result.time_vecs);
+    eprintln!("Wrote entities.tsv, relations.tsv, times.tsv");
+
+    if do_eval && !ds.test.is_empty() {
+        eprintln!("Evaluating on test set ({} quads)...", ds.test.len());
+        let filter = TemporalFilterIndex::from_quads(&ds.all_quads());
+        let m = evaluate_temporal_link_prediction(&result.to_scorer(), &ds.test, &filter);
+        println!("MRR:      {:.4}", m.mrr);
+        println!("  head:   {:.4}", m.head_mrr);
+        println!("  tail:   {:.4}", m.tail_mrr);
+        println!("MR:       {:.1}", m.mean_rank);
+        println!("Hits@1:   {:.4}", m.hits_at_1);
+        println!("Hits@3:   {:.4}", m.hits_at_3);
+        println!("Hits@10:  {:.4}", m.hits_at_10);
+    }
 }
 
 fn cmd_eval(args: &[String]) {
