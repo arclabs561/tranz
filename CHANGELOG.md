@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.1] - 2026-07-04
+
+### Added
+
+- Temporal training: `--n3-reg` enables the weighted nuclear-3 regularizer
+  Ω³ (Lacroix et al., ICLR 2020, Eq. 4), penalizing the
+  `(relation ∘ timestamp)` product as one factor per the paper's order-4
+  unfolding argument. Measured on ICEWS14 at dim 256: valid MRR 0.34 → 0.53
+  with both regularizers on (use `--init-scale 0.01`; with tiny init the
+  origin is a fixed point of the trilinear score and Ω³ pins the model
+  there).
+- `TemporalScorer::score_all_times`: the timestamp-answering direction
+  (time projection), with a hoisted `TComplEx` override.
+- CLI: `--eval-split valid|test`, so hyperparameter selection can run on
+  the validation split.
+
+### Changed
+
+- `--time-smooth` now applies the paper's Λ₃ penalty (cubed absolute
+  discrete derivative, normalized by `|T|−1`) instead of a squared-L2
+  mean; results for nonzero values differ from 0.7.0. The previous form
+  was a deviation from the cited reference.
+
 ## [0.7.0] - 2026-07-04
 
 ### Added
