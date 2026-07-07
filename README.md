@@ -5,7 +5,7 @@ and DistMult. GPU training via Burn (wgpu/Metal).
 
 ```toml
 [dependencies]
-tranz = "0.6"
+tranz = "0.7.3"
 ```
 
 Dual-licensed under MIT or Apache-2.0.
@@ -57,7 +57,9 @@ evaluation on the test split.
 | ComplEx | 1-N + label smoothing + reciprocals | 100 | 50 | **0.424** | 0.398 | 0.476 |
 
 Published ComplEx MRR on WN18RR is 0.475 (Lacroix et al. 2018, with Adagrad + N3
-regularization, which the Burn 1-N trainer does not implement).
+regularization). The reproduced command below leaves N3 off; pass
+`--n3-reg <coefficient>` to enable the Burn trainer's weighted nuclear-3 penalty
+for ComplEx or DistMult.
 
 Reproduce (about 20 min on Metal: dim 100, 50 epochs over full WN18RR):
 

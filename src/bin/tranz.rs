@@ -56,6 +56,7 @@ TRAIN OPTIONS:
     --lr <F>              Learning rate (default: 0.001)
     --init-scale <F>      Init std for embeddings (default: 0.001)
     --label-smoothing <F> Label smoothing epsilon for 1-N CE (default: 0.0)
+    --n3-reg <F>          Weighted nuclear-3 (Ω³) coefficient (default: 0)
     --reciprocals         Add reciprocal relations before training
     --output <DIR>        Output directory for embeddings (default: output/)
     --eval                Evaluate on test set after training
