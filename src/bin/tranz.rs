@@ -81,7 +81,15 @@ PREDICT OPTIONS:
     --head <NAME>         Head entity name (for tail prediction)
     --tail <NAME>         Tail entity name (for head prediction)
     --relation <NAME>     Relation name
-    --k <N>               Number of predictions (default: 10)"
+    --k <N>               Number of predictions (default: 10)
+
+USAGE:
+    tranz eval [OPTIONS]
+
+EVAL OPTIONS:
+    --data <DIR>          WN18RR-format directory (train.txt, valid.txt, test.txt)
+    --embeddings <DIR>    Directory with entities.tsv and relations.tsv
+    --model <MODEL>       transe, rotate, complex, distmult (default: transe)"
     );
 }
 
