@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4] - 2026-07-07
+
+### Changed
+
+- Query-answering t-norm and t-conorm helpers now delegate their standard
+  Gödel/min and Product formulas to `tnorms`.
+
 ## [0.7.3] - 2026-07-04
 
 ### Fixed

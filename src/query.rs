@@ -60,6 +60,15 @@ pub enum TNorm {
     Product,
 }
 
+impl TNorm {
+    fn logic_family(self) -> tnorms::LogicFamily {
+        match self {
+            Self::Min => tnorms::LogicFamily::Godel,
+            Self::Product => tnorms::LogicFamily::Product,
+        }
+    }
+}
+
 /// Score normalization strategy for converting raw Scorer output to `[0, 1]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoreNorm {
@@ -331,17 +340,11 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 fn apply_t_norm(a: f32, b: f32, norm: TNorm) -> f32 {
-    match norm {
-        TNorm::Min => a.min(b),
-        TNorm::Product => a * b,
-    }
+    norm.logic_family().tnorm_f32(a, b)
 }
 
 fn apply_t_conorm(a: f32, b: f32, norm: TNorm) -> f32 {
-    match norm {
-        TNorm::Min => a.max(b),
-        TNorm::Product => a + b - a * b,
-    }
+    norm.logic_family().tconorm_f32(a, b)
 }
 
 fn combine_conjunction(branch_scores: &[Vec<f32>], norm: TNorm, n: usize) -> Vec<f32> {
@@ -558,6 +561,16 @@ mod tests {
                 (conorm - dual).abs() < 1e-6,
                 "De Morgan failed for {norm:?}: {conorm} vs {dual}"
             );
+        }
+    }
+
+    #[test]
+    fn t_norm_helpers_delegate_to_tnorms() {
+        let (a, b) = (0.3, 0.7);
+        for norm in [TNorm::Min, TNorm::Product] {
+            let family = norm.logic_family();
+            assert!((apply_t_norm(a, b, norm) - family.tnorm_f32(a, b)).abs() < 1e-6);
+            assert!((apply_t_conorm(a, b, norm) - family.tconorm_f32(a, b)).abs() < 1e-6);
         }
     }
 }
