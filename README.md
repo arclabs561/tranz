@@ -1,7 +1,6 @@
 # tranz
 
-Point-embedding knowledge graph models: TransE, RotatE, ComplEx,
-and DistMult. GPU training via Burn (wgpu/Metal).
+Knowledge graph embedding models.
 
 ```toml
 [dependencies]
@@ -10,23 +9,9 @@ tranz = "0.7.3"
 
 Dual-licensed under MIT or Apache-2.0.
 
-For context on how point embeddings relate to region-based approaches, see [Why Regions, Not Points](https://attobop.net/posts/region-embeddings/).
-
-## Models
-
-Each model scores a triple (head, relation, tail) differently:
-
-| Model | Scoring function | Intuition | Reference |
-|---|---|---|---|
-| TransE | $\lVert \mathbf{h} + \mathbf{r} - \mathbf{t} \rVert$ | Translation: tail = head + relation | Bordes et al., 2013 |
-| RotatE | $\lVert \mathbf{h} \circ \mathbf{r} - \mathbf{t} \rVert$ | Rotation in complex plane | Sun et al., 2019 |
-| ComplEx | $\text{Re}(\langle \mathbf{h}, \mathbf{r}, \bar{\mathbf{t}} \rangle)$ | Asymmetric via complex conjugate | Trouillon et al., 2016 |
-| DistMult | $\langle \mathbf{h}, \mathbf{r}, \mathbf{t} \rangle$ | Element-wise product, symmetric | Yang et al., 2015 |
-
-$\mathbf{h}, \mathbf{r}, \mathbf{t}$ are learned embedding vectors for head, relation, and tail.
-$\lVert \cdot \rVert$ is the L2 norm, $\circ$ is element-wise product, $\langle \cdot \rangle$ is the trilinear dot product, $\bar{\mathbf{t}}$ is the complex conjugate.
-
-## Quick start
+`tranz` trains and scores TransE, RotatE, ComplEx, and DistMult models. It
+includes dataset loading, filtered link-prediction evaluation, embedding export,
+and Burn-backed CPU/GPU training.
 
 Install with `cargo install tranz --features burn-ndarray` (CPU) or
 `--features burn-wgpu` (GPU/Metal). Training uses Burn's 1-N (1vsAll)
@@ -164,6 +149,20 @@ let models: Vec<Box<dyn Scorer>> = vec![
 let ensemble = EnsembledScorer::new(models);
 let top5 = ensemble.top_k_tails(0, 0, 5);
 ```
+
+## Models
+
+Each model scores a triple (head, relation, tail) differently:
+
+| Model | Scoring function | Intuition | Reference |
+|---|---|---|---|
+| TransE | $\lVert \mathbf{h} + \mathbf{r} - \mathbf{t} \rVert$ | Translation: tail = head + relation | Bordes et al., 2013 |
+| RotatE | $\lVert \mathbf{h} \circ \mathbf{r} - \mathbf{t} \rVert$ | Rotation in complex plane | Sun et al., 2019 |
+| ComplEx | $\text{Re}(\langle \mathbf{h}, \mathbf{r}, \bar{\mathbf{t}} \rangle)$ | Asymmetric via complex conjugate | Trouillon et al., 2016 |
+| DistMult | $\langle \mathbf{h}, \mathbf{r}, \mathbf{t} \rangle$ | Element-wise product, symmetric | Yang et al., 2015 |
+
+$\mathbf{h}, \mathbf{r}, \mathbf{t}$ are learned embedding vectors for head,
+relation, and tail.
 
 ## Training
 
