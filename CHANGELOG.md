@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-08
+
 ### Added
 
 - `Scorer::score_all_tails_batch` and `Scorer::score_all_heads_batch` score
