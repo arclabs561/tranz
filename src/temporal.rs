@@ -8,7 +8,7 @@
 //! embedding multiplied into the relation), and evaluates temporal link
 //! prediction in the time-aware filtered setting.
 //!
-//! Training lives in [`burn_temporal`](crate::burn_temporal) (feature
+//! Training lives in `burn_temporal` (feature
 //! `burn-ndarray` or `burn-wgpu`); the CLI subcommand is
 //! `tranz train-temporal`.
 
@@ -183,7 +183,7 @@ pub fn load_temporal_dataset(dir: &Path) -> Result<TemporalDataset, crate::Error
 
 /// Trait for scoring temporal quads. Same convention as
 /// [`Scorer`](crate::Scorer): **lower values indicate more likely quads**.
-pub trait TemporalScorer: Sync {
+pub trait TemporalScorer: Send + Sync {
     /// Score `(head, relation, tail, time)`. Lower = more likely.
     fn score(&self, head: usize, relation: usize, tail: usize, time: usize) -> f32;
 

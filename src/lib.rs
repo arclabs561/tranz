@@ -18,7 +18,7 @@
 //! ## Feature flags
 //!
 //! - **`rand`** (default): enables random initialization via `Model::new()`.
-//! - **`burn-ndarray`**: enables training via the [`burn_train`] module on the
+//! - **`burn-ndarray`**: enables training via the `burn_train` module on the
 //!   ndarray (CPU) backend.
 //! - **`burn-wgpu`**: training on the WGPU backend (Metal/Vulkan/WebGPU).
 
@@ -34,6 +34,8 @@ pub mod io;
 pub mod query;
 pub mod temporal;
 
+use rayon::prelude::*;
+
 /// Errors from tranz operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -47,7 +49,7 @@ pub enum Error {
 ///
 /// Scores are distances or negative similarities: **lower values indicate
 /// more likely triples**.
-pub trait Scorer: Sync {
+pub trait Scorer: Send + Sync {
     /// Score a triple `(head, relation, tail)`. Lower = more likely.
     fn score(&self, head: usize, relation: usize, tail: usize) -> f32;
 
@@ -64,10 +66,34 @@ pub trait Scorer: Sync {
             .collect()
     }
 
+    /// Score all entities as tail replacements for many `(head, relation, ?)`
+    /// queries.
+    ///
+    /// The outer vec follows `heads`; each inner vec has length
+    /// `num_entities()`.
+    fn score_all_tails_batch(&self, heads: &[usize], relation: usize) -> Vec<Vec<f32>> {
+        heads
+            .par_iter()
+            .map(|&head| self.score_all_tails(head, relation))
+            .collect()
+    }
+
     /// Score all entities as head replacements for `(?, relation, tail)`.
     fn score_all_heads(&self, relation: usize, tail: usize) -> Vec<f32> {
         (0..self.num_entities())
             .map(|h| self.score(h, relation, tail))
+            .collect()
+    }
+
+    /// Score all entities as head replacements for many `(?, relation, tail)`
+    /// queries.
+    ///
+    /// The outer vec follows `tails`; each inner vec has length
+    /// `num_entities()`.
+    fn score_all_heads_batch(&self, relation: usize, tails: &[usize]) -> Vec<Vec<f32>> {
+        tails
+            .par_iter()
+            .map(|&tail| self.score_all_heads(relation, tail))
             .collect()
     }
 
@@ -121,8 +147,28 @@ fn top_k_from_scores(scores: Vec<f32>, k: usize) -> Vec<(usize, f32)> {
     scored
 }
 
+pub(crate) fn top_k_from_scores_descending(scores: &[f32], k: usize) -> Vec<(usize, f32)> {
+    if k == 0 || scores.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, f32)> = scores.iter().copied().enumerate().collect();
+    if k < scored.len() {
+        scored.select_nth_unstable_by(k, score_id_desc_order);
+        scored.truncate(k);
+    }
+    scored.sort_by(score_id_desc_order);
+    scored
+}
+
 fn score_id_order(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
     a.1.partial_cmp(&b.1)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| a.0.cmp(&b.0))
+}
+
+fn score_id_desc_order(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
+    b.1.partial_cmp(&a.1)
         .unwrap_or(std::cmp::Ordering::Equal)
         .then_with(|| a.0.cmp(&b.0))
 }
@@ -1000,6 +1046,50 @@ impl Scorer for EnsembledScorer {
         }
         avg
     }
+
+    fn score_all_tails_batch(&self, heads: &[usize], relation: usize) -> Vec<Vec<f32>> {
+        let n = self.num_entities();
+        let k = self.models.len() as f32;
+        let mut avg = vec![vec![0.0_f32; n]; heads.len()];
+
+        for m in &self.models {
+            let batch = m.score_all_tails_batch(heads, relation);
+            for (avg_row, scores) in avg.iter_mut().zip(batch) {
+                for (target, score) in avg_row.iter_mut().zip(scores) {
+                    *target += score;
+                }
+            }
+        }
+
+        for row in &mut avg {
+            for score in row {
+                *score /= k;
+            }
+        }
+        avg
+    }
+
+    fn score_all_heads_batch(&self, relation: usize, tails: &[usize]) -> Vec<Vec<f32>> {
+        let n = self.num_entities();
+        let k = self.models.len() as f32;
+        let mut avg = vec![vec![0.0_f32; n]; tails.len()];
+
+        for m in &self.models {
+            let batch = m.score_all_heads_batch(relation, tails);
+            for (avg_row, scores) in avg.iter_mut().zip(batch) {
+                for (target, score) in avg_row.iter_mut().zip(scores) {
+                    *target += score;
+                }
+            }
+        }
+
+        for row in &mut avg {
+            for score in row {
+                *score /= k;
+            }
+        }
+        avg
+    }
 }
 
 #[cfg(test)]
@@ -1227,6 +1317,37 @@ mod tests {
         assert!(model.top_k_tails(0, 0, 0).is_empty());
         assert!(model.top_k_heads(0, 0, 0).is_empty());
         assert!(model.top_k_relations(0, 1, 5, 0).is_empty());
+    }
+
+    #[test]
+    fn top_k_descending_sorts_by_score_then_id() {
+        let top = top_k_from_scores_descending(&[0.1, 0.9, 0.9, 0.2], 3);
+        assert_eq!(top, vec![(1, 0.9), (2, 0.9), (3, 0.2)]);
+        assert!(top_k_from_scores_descending(&[0.1, 0.2], 0).is_empty());
+    }
+
+    #[test]
+    fn batch_tail_scores_match_individual_rows() {
+        let model = TransE::new(12, 3, 8);
+        let heads = [0, 3, 7];
+        let batch = model.score_all_tails_batch(&heads, 1);
+        assert_eq!(batch.len(), heads.len());
+
+        for (row, &head) in batch.iter().zip(&heads) {
+            assert_eq!(row, &model.score_all_tails(head, 1));
+        }
+    }
+
+    #[test]
+    fn batch_head_scores_match_individual_rows() {
+        let model = DistMult::new(12, 3, 8);
+        let tails = [1, 4, 8];
+        let batch = model.score_all_heads_batch(2, &tails);
+        assert_eq!(batch.len(), tails.len());
+
+        for (row, &tail) in batch.iter().zip(&tails) {
+            assert_eq!(row, &model.score_all_heads(2, tail));
+        }
     }
 
     // -- TransE norm --------------------------------------------------------

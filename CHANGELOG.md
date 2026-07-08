@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `Scorer::score_all_tails_batch` and `Scorer::score_all_heads_batch` score
+  many same-relation projections at once. `answer_query` uses the tail batch
+  path for beam projection.
+
+### Changed
+
+- Query configuration now uses `tnorms::LogicFamily` directly instead of the
+  local `query::TNorm` shim. `TNorm::Min` becomes `LogicFamily::Godel`.
+- Negation in query answering now delegates to `LogicFamily::Lukasiewicz`.
+- `Scorer` and `TemporalScorer` now require `Send + Sync`, so scorer objects
+  can move across worker threads as well as be shared by reference.
+
 ## [0.7.4] - 2026-07-07
 
 ### Changed

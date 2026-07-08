@@ -49,25 +49,8 @@
 //! let top10 = answer_query_topk(&model, &query, &QueryConfig::default(), 10);
 //! ```
 
-use crate::Scorer;
-
-/// T-norm for combining conjunctive (AND) scores.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TNorm {
-    /// Gödel: `min(x, y)`. Best for intersection queries.
-    Min,
-    /// Product: `x * y`. Best for chain queries.
-    Product,
-}
-
-impl TNorm {
-    fn logic_family(self) -> tnorms::LogicFamily {
-        match self {
-            Self::Min => tnorms::LogicFamily::Godel,
-            Self::Product => tnorms::LogicFamily::Product,
-        }
-    }
-}
+use crate::{top_k_from_scores_descending, Scorer};
+use tnorms::LogicFamily;
 
 /// Score normalization strategy for converting raw Scorer output to `[0, 1]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,17 +66,17 @@ pub enum ScoreNorm {
 /// Configuration for query answering.
 #[derive(Debug, Clone)]
 pub struct QueryConfig {
-    /// T-norm for chain projection (hop) operations. Default: [`TNorm::Product`].
+    /// T-norm for chain projection (hop) operations. Default: [`LogicFamily::Product`].
     ///
     /// Product tends to work better for chains (2p, 3p) because it
     /// propagates score magnitude through hops.
-    pub t_norm_projection: TNorm,
+    pub t_norm_projection: LogicFamily,
     /// T-norm for intersection (AND) and its De Morgan dual t-conorm
-    /// for union (OR). Default: [`TNorm::Min`].
+    /// for union (OR). Default: [`LogicFamily::Godel`].
     ///
     /// Min/max pair tends to work better for intersections (2i, 3i).
     /// Product/probabilistic-sum pair can work better on some datasets.
-    pub t_norm_intersection: TNorm,
+    pub t_norm_intersection: LogicFamily,
     /// Beam width for intermediate variable search. Default: 128.
     ///
     /// Higher values improve recall at the cost of `O(k * |E|)` per hop.
@@ -105,8 +88,8 @@ pub struct QueryConfig {
 impl Default for QueryConfig {
     fn default() -> Self {
         Self {
-            t_norm_projection: TNorm::Product,
-            t_norm_intersection: TNorm::Min,
+            t_norm_projection: LogicFamily::Product,
+            t_norm_intersection: LogicFamily::Godel,
             beam_k: 128,
             score_norm: ScoreNorm::Sigmoid,
         }
@@ -244,7 +227,10 @@ fn eval_query(model: &dyn Scorer, query: &Query, config: &QueryConfig, n: usize)
         }
         Query::Negation { inner } => {
             let scores = eval_query(model, inner, config, n);
-            scores.iter().map(|&s| 1.0 - s).collect()
+            scores
+                .iter()
+                .map(|&s| LogicFamily::Lukasiewicz.neg_f32(s))
+                .collect()
         }
     }
 }
@@ -255,7 +241,7 @@ fn eval_query(model: &dyn Scorer, query: &Query, config: &QueryConfig, n: usize)
 /// tails through `relation` for each, combines inner and tail scores with
 /// the t-norm, and returns the max over all beam candidates per target.
 ///
-/// For `TNorm::Min`, sigmoid is deferred: raw scores are compared directly
+/// For [`LogicFamily::Godel`], sigmoid is deferred: raw scores are compared directly
 /// (negated, since lower raw = better) and sigmoid is applied once per
 /// entity at the end. This reduces sigmoid calls from `beam_k * N` to `N`.
 fn beam_project(
@@ -267,16 +253,17 @@ fn beam_project(
 ) -> Vec<f32> {
     let candidates = top_k_descending(inner_scores, config.beam_k);
     let norm = config.t_norm_projection;
+    let heads: Vec<usize> = candidates.iter().map(|(entity, _)| *entity).collect();
 
     match norm {
-        TNorm::Min if config.score_norm == ScoreNorm::Sigmoid => {
+        LogicFamily::Godel if config.score_norm == ScoreNorm::Sigmoid => {
             // Deferred sigmoid optimization: since sigmoid is monotone,
             // min(sigmoid(a), sigmoid(b)) = sigmoid(min(a, b)).
             // Work in raw-score space, apply sigmoid once at the end.
             let mut best_raw = vec![f32::NEG_INFINITY; n];
-            for &(entity, inner_score) in &candidates {
-                let inner_raw = logit(inner_score);
-                let raw_tail_scores = model.score_all_tails(entity, relation);
+            let raw_batches = model.score_all_tails_batch(&heads, relation);
+            for ((_, inner_score), raw_tail_scores) in candidates.iter().zip(raw_batches.iter()) {
+                let inner_raw = logit(*inner_score);
                 for (t, &raw) in raw_tail_scores.iter().enumerate() {
                     let tail_raw = -raw;
                     let combined_raw = inner_raw.min(tail_raw);
@@ -290,11 +277,11 @@ fn beam_project(
         _ => {
             // General path: normalize per beam candidate, combine with t-norm.
             let mut result = vec![0.0_f32; n];
-            for &(entity, inner_score) in &candidates {
-                let raw_tail_scores = model.score_all_tails(entity, relation);
-                let tail_probs = normalize_scores(&raw_tail_scores, config.score_norm);
+            let raw_batches = model.score_all_tails_batch(&heads, relation);
+            for ((_, inner_score), raw_tail_scores) in candidates.iter().zip(raw_batches.iter()) {
+                let tail_probs = normalize_scores(raw_tail_scores, config.score_norm);
                 for (t, &tail_prob) in tail_probs.iter().enumerate() {
-                    let combined = apply_t_norm(inner_score, tail_prob, norm);
+                    let combined = apply_t_norm(*inner_score, tail_prob, norm);
                     if combined > result[t] {
                         result[t] = combined;
                     }
@@ -339,15 +326,15 @@ fn sigmoid(x: f32) -> f32 {
     }
 }
 
-fn apply_t_norm(a: f32, b: f32, norm: TNorm) -> f32 {
-    norm.logic_family().tnorm_f32(a, b)
+fn apply_t_norm(a: f32, b: f32, norm: LogicFamily) -> f32 {
+    norm.tnorm_f32(a, b)
 }
 
-fn apply_t_conorm(a: f32, b: f32, norm: TNorm) -> f32 {
-    norm.logic_family().tconorm_f32(a, b)
+fn apply_t_conorm(a: f32, b: f32, norm: LogicFamily) -> f32 {
+    norm.tconorm_f32(a, b)
 }
 
-fn combine_conjunction(branch_scores: &[Vec<f32>], norm: TNorm, n: usize) -> Vec<f32> {
+fn combine_conjunction(branch_scores: &[Vec<f32>], norm: LogicFamily, n: usize) -> Vec<f32> {
     let mut result = vec![1.0_f32; n];
     for branch in branch_scores {
         for (i, &s) in branch.iter().enumerate() {
@@ -357,7 +344,7 @@ fn combine_conjunction(branch_scores: &[Vec<f32>], norm: TNorm, n: usize) -> Vec
     result
 }
 
-fn combine_disjunction(branch_scores: &[Vec<f32>], norm: TNorm, n: usize) -> Vec<f32> {
+fn combine_disjunction(branch_scores: &[Vec<f32>], norm: LogicFamily, n: usize) -> Vec<f32> {
     let mut result = vec![0.0_f32; n];
     for branch in branch_scores {
         for (i, &s) in branch.iter().enumerate() {
@@ -368,10 +355,7 @@ fn combine_disjunction(branch_scores: &[Vec<f32>], norm: TNorm, n: usize) -> Vec
 }
 
 fn top_k_descending(scores: &[f32], k: usize) -> Vec<(usize, f32)> {
-    let mut indexed: Vec<(usize, f32)> = scores.iter().copied().enumerate().collect();
-    indexed.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    indexed.truncate(k);
-    indexed
+    top_k_from_scores_descending(scores, k)
 }
 
 #[cfg(test)]
@@ -417,8 +401,8 @@ mod tests {
     fn chain_2p_finds_two_hop_answer() {
         let model = ChainModel { n: 20 };
         let config = QueryConfig {
-            t_norm_projection: TNorm::Product,
-            t_norm_intersection: TNorm::Min,
+            t_norm_projection: LogicFamily::Product,
+            t_norm_intersection: LogicFamily::Godel,
             beam_k: 20,
             ..QueryConfig::default()
         };
@@ -450,7 +434,7 @@ mod tests {
     fn union_at_least_as_good_as_branches() {
         let model = ChainModel { n: 10 };
         let config = QueryConfig {
-            t_norm_intersection: TNorm::Product,
+            t_norm_intersection: LogicFamily::Product,
             ..QueryConfig::default()
         };
 
@@ -509,8 +493,8 @@ mod tests {
     fn pi_query_intersect_then_project() {
         let model = ChainModel { n: 20 };
         let config = QueryConfig {
-            t_norm_projection: TNorm::Min,
-            t_norm_intersection: TNorm::Min,
+            t_norm_projection: LogicFamily::Godel,
+            t_norm_intersection: LogicFamily::Godel,
             beam_k: 20,
             ..QueryConfig::default()
         };
@@ -536,17 +520,19 @@ mod tests {
     fn t_norm_properties() {
         // Identity: t_norm(x, 1) = x
         for &x in &[0.0, 0.3, 0.7, 1.0] {
-            assert!((apply_t_norm(x, 1.0, TNorm::Min) - x).abs() < 1e-6);
-            assert!((apply_t_norm(x, 1.0, TNorm::Product) - x).abs() < 1e-6);
+            assert!((apply_t_norm(x, 1.0, LogicFamily::Godel) - x).abs() < 1e-6);
+            assert!((apply_t_norm(x, 1.0, LogicFamily::Product) - x).abs() < 1e-6);
         }
         // Commutativity: t_norm(a, b) = t_norm(b, a)
         let (a, b) = (0.3, 0.7);
         assert_eq!(
-            apply_t_norm(a, b, TNorm::Min),
-            apply_t_norm(b, a, TNorm::Min)
+            apply_t_norm(a, b, LogicFamily::Godel),
+            apply_t_norm(b, a, LogicFamily::Godel)
         );
         assert!(
-            (apply_t_norm(a, b, TNorm::Product) - apply_t_norm(b, a, TNorm::Product)).abs() < 1e-6
+            (apply_t_norm(a, b, LogicFamily::Product) - apply_t_norm(b, a, LogicFamily::Product))
+                .abs()
+                < 1e-6
         );
     }
 
@@ -554,7 +540,7 @@ mod tests {
     fn t_conorm_de_morgan_duality() {
         // t_conorm(a, b) = 1 - t_norm(1-a, 1-b)
         let (a, b) = (0.3, 0.7);
-        for norm in [TNorm::Min, TNorm::Product] {
+        for norm in [LogicFamily::Godel, LogicFamily::Product] {
             let conorm = apply_t_conorm(a, b, norm);
             let dual = 1.0 - apply_t_norm(1.0 - a, 1.0 - b, norm);
             assert!(
@@ -567,10 +553,13 @@ mod tests {
     #[test]
     fn t_norm_helpers_delegate_to_tnorms() {
         let (a, b) = (0.3, 0.7);
-        for norm in [TNorm::Min, TNorm::Product] {
-            let family = norm.logic_family();
-            assert!((apply_t_norm(a, b, norm) - family.tnorm_f32(a, b)).abs() < 1e-6);
-            assert!((apply_t_conorm(a, b, norm) - family.tconorm_f32(a, b)).abs() < 1e-6);
+        for norm in [
+            LogicFamily::Godel,
+            LogicFamily::Product,
+            LogicFamily::Lukasiewicz,
+        ] {
+            assert!((apply_t_norm(a, b, norm) - norm.tnorm_f32(a, b)).abs() < 1e-6);
+            assert!((apply_t_conorm(a, b, norm) - norm.tconorm_f32(a, b)).abs() < 1e-6);
         }
     }
 }
