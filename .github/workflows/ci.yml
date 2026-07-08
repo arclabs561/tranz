@@ -36,3 +36,11 @@ jobs:
         if: matrix.lint
         env:
           RUSTDOCFLAGS: -Dwarnings
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          feature-group: all-features
