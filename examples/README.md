@@ -61,6 +61,7 @@ cargo run --release --features "burn-ndarray,burn-wgpu" --example bench_wgpu
 | Example | Question | Run |
 |---|---|---|
 | `score` | Score triples with a CPU scorer (no training backend needed) | `cargo run --release --example score` |
+| `logical_query` | Compose one-hop scores into path and intersection queries | `cargo run --release --example logical_query` |
 | `bench_scoring` | Scoring hot-path throughput | `cargo run --release --example bench_scoring` |
 | `bench_f32_vs_f64` | Does f64 accumulation matter for dot products? | `cargo run --release --example bench_f32_vs_f64` |
 
