@@ -29,6 +29,16 @@ use rayon::prelude::*;
 use crate::dataset::{FilterIndex, TripleIds};
 use crate::Scorer;
 
+/// True when `competitor` strictly outranks `target` (lower score = better).
+///
+/// Non-finite scores are handled defensively so a broken/`NaN` model cannot
+/// silently inflate MRR: a `NaN` competitor never beats anyone, and a `NaN`
+/// target ranks worst (every finite competitor beats it) instead of slipping
+/// to rank 1 because `NaN < x` is always false.
+pub(crate) fn beats(competitor: f32, target: f32) -> bool {
+    competitor.is_finite() && (target.is_nan() || competitor < target)
+}
+
 /// Link prediction metrics.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Metrics {
@@ -114,7 +124,7 @@ pub fn evaluate_link_prediction_detailed(
                 if known_tails.contains(&t_prime) {
                     continue;
                 }
-                if score < target_tail_score {
+                if beats(score, target_tail_score) {
                     tail_rank += 1;
                 }
             }
@@ -131,7 +141,7 @@ pub fn evaluate_link_prediction_detailed(
                 if known_heads.contains(&h_prime) {
                     continue;
                 }
-                if score < target_head_score {
+                if beats(score, target_head_score) {
                     head_rank += 1;
                 }
             }
@@ -247,7 +257,7 @@ pub fn evaluate_link_prediction_sampled(
                     if idx == t || known_tails.contains(&idx) {
                         continue;
                     }
-                    if model.score(h, r, idx) < target_score {
+                    if beats(model.score(h, r, idx), target_score) {
                         rank += 1;
                     }
                 }
@@ -264,7 +274,7 @@ pub fn evaluate_link_prediction_sampled(
                     if idx == h || known_heads.contains(&idx) {
                         continue;
                     }
-                    if model.score(idx, r, t) < target_score {
+                    if beats(model.score(idx, r, t), target_score) {
                         rank += 1;
                     }
                 }
@@ -459,6 +469,46 @@ mod tests {
             metrics.mrr,
             metrics.head_mrr,
             metrics.tail_mrr
+        );
+    }
+
+    /// A NaN target score must not be treated as a perfect top-1 prediction.
+    /// `score < NaN` is always `false`, so without NaN-safety every competitor
+    /// "loses" to the target and MRR inflates to 1.0. With `beats`, a NaN
+    /// target ranks worst (MRR minimal, not inflated).
+    #[test]
+    fn nan_target_ranks_worst_not_first() {
+        struct NanTarget;
+        impl Scorer for NanTarget {
+            fn score(&self, h: usize, r: usize, t: usize) -> f32 {
+                // Only the exact target triple (0, 0, 1) is NaN; everything
+                // else is a finite 1.0. This isolates the tail-target and
+                // head-target as NaN while competitors stay finite.
+                if (h, r, t) == (0, 0, 1) {
+                    f32::NAN
+                } else {
+                    1.0
+                }
+            }
+            fn num_entities(&self) -> usize {
+                3
+            }
+        }
+        // Without the fix, `score < NaN` is false for every competitor, so the
+        // NaN target stayed at rank 1 => MRR 1.0 / H@1 1.0 (inflated). With the
+        // fix the NaN target ranks worst: both competitors beat it, so both the
+        // head and tail predictions give rank 3 => MRR 1/3 and H@1 0.
+        let test = vec![tid(0, 0, 1)];
+        let filter = make_filter(&test);
+        let metrics = evaluate_link_prediction(&NanTarget, &test, &filter, 3);
+        assert!(
+            (metrics.mrr - 1.0 / 3.0).abs() < 1e-5,
+            "NaN target should rank worst: got MRR={} want ~0.333",
+            metrics.mrr
+        );
+        assert!(
+            (metrics.hits_at_1 - 0.0).abs() < 1e-6,
+            "H@1 must be 0 for a NaN target"
         );
     }
 }

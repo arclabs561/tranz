@@ -18,7 +18,7 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::dataset::Vocab;
-use crate::eval::Metrics;
+use crate::eval::{beats, Metrics};
 
 /// One interned quad: `(head, relation, tail, time)` as dense ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,7 +495,7 @@ pub fn evaluate_temporal_link_prediction(
             let target = tail_scores[q.tail];
             let mut tail_rank = 1u32;
             for (t, &s) in tail_scores.iter().enumerate() {
-                if t != q.tail && !known_tails.contains(&t) && s < target {
+                if t != q.tail && !known_tails.contains(&t) && beats(s, target) {
                     tail_rank += 1;
                 }
             }
@@ -508,7 +508,7 @@ pub fn evaluate_temporal_link_prediction(
             let target = head_scores[q.head];
             let mut head_rank = 1u32;
             for (h, &s) in head_scores.iter().enumerate() {
-                if h != q.head && !known_heads.contains(&h) && s < target {
+                if h != q.head && !known_heads.contains(&h) && beats(s, target) {
                     head_rank += 1;
                 }
             }
