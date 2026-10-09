@@ -38,7 +38,7 @@ serde = { version = "1.0", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 burn = { version = "0.20", features = ["autodiff"], optional = true }
-burn-ndarray = { version = "0.20", features = ["rayon"], optional = true }
+burn-ndarray = { version = "0.21", features = ["rayon"], optional = true }
 burn-wgpu = { version = "0.20", optional = true }
 
 [features]
