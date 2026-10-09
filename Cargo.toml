@@ -11,6 +11,17 @@ keywords = ["knowledge-graph", "embeddings", "link-prediction"]
 categories = ["science", "algorithms"]
 readme = "README.md"
 publish = true
+include = [
+  "src/**",
+  "examples/**",
+  "tests/**",
+  "README.md",
+  "BENCHMARKS.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+]
 
 [package.metadata.docs.rs]
 features = ["burn-ndarray"]
@@ -42,6 +53,10 @@ serde = ["dep:serde"]
 name = "tranz"
 test = false
 path = "src/bin/tranz.rs"
+required-features = ["burn-ndarray"]
+
+[[test]]
+name = "seeded_training"
 required-features = ["burn-ndarray"]
 
 [[example]]

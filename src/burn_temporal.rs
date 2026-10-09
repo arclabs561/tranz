@@ -139,6 +139,61 @@ pub fn train_tcomplex<B: AutodiffBackend>(
     time_smooth: f64,
     device: &B::Device,
 ) -> TComplExResult {
+    train_tcomplex_impl::<B, _>(
+        train_quads,
+        num_entities,
+        num_relations,
+        num_timestamps,
+        config,
+        time_smooth,
+        device,
+        &mut rand::rng(),
+    )
+}
+
+/// Like [`train_tcomplex`], but reproducible: seeds the backend RNG used for
+/// parameter initialization (`B::seed`) and the per-epoch shuffle.
+///
+/// The same seed, data, config and backend give the same embeddings, as
+/// long as nothing else draws from the backend RNG concurrently (on
+/// `burn-ndarray` it is process-wide).
+#[allow(clippy::too_many_arguments)] // train_tcomplex's seven plus the seed or RNG
+pub fn train_tcomplex_seeded<B: AutodiffBackend>(
+    train_quads: &[QuadIds],
+    num_entities: usize,
+    num_relations: usize,
+    num_timestamps: usize,
+    config: &BurnTrainConfig,
+    time_smooth: f64,
+    device: &B::Device,
+    seed: u64,
+) -> TComplExResult {
+    use rand::SeedableRng;
+    B::seed(device, seed);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    train_tcomplex_impl::<B, _>(
+        train_quads,
+        num_entities,
+        num_relations,
+        num_timestamps,
+        config,
+        time_smooth,
+        device,
+        &mut rng,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // train_tcomplex's seven plus the seed or RNG
+fn train_tcomplex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
+    train_quads: &[QuadIds],
+    num_entities: usize,
+    num_relations: usize,
+    num_timestamps: usize,
+    config: &BurnTrainConfig,
+    time_smooth: f64,
+    device: &B::Device,
+    rng: &mut R,
+) -> TComplExResult {
     let cols = 2 * config.dim;
     let mk = |rows: usize| {
         Param::initialized(
@@ -170,7 +225,7 @@ pub fn train_tcomplex<B: AutodiffBackend>(
     for _epoch in 0..config.epochs {
         {
             use rand::seq::SliceRandom;
-            indices.shuffle(&mut rand::rng());
+            indices.shuffle(rng);
         }
         // Detached on-device loss accumulator; one sync per epoch (see
         // train_kge for why per-batch into_scalar stalls wgpu/Metal).

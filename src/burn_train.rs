@@ -176,6 +176,51 @@ pub fn train_complex<B: AutodiffBackend>(
     config: &BurnTrainConfig,
     device: &B::Device,
 ) -> BurnTrainResult {
+    train_complex_impl::<B, _>(
+        train_triples,
+        num_entities,
+        num_relations,
+        config,
+        device,
+        &mut rand::rng(),
+    )
+}
+
+/// Like [`train_complex`], but reproducible: seeds the backend RNG used for
+/// parameter initialization (`B::seed`) and the per-epoch shuffle.
+///
+/// The same seed, data, config and backend give the same embeddings, as
+/// long as nothing else draws from the backend RNG concurrently (on
+/// `burn-ndarray` it is process-wide).
+pub fn train_complex_seeded<B: AutodiffBackend>(
+    train_triples: &[crate::dataset::TripleIds],
+    num_entities: usize,
+    num_relations: usize,
+    config: &BurnTrainConfig,
+    device: &B::Device,
+    seed: u64,
+) -> BurnTrainResult {
+    use rand::SeedableRng;
+    B::seed(device, seed);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    train_complex_impl::<B, _>(
+        train_triples,
+        num_entities,
+        num_relations,
+        config,
+        device,
+        &mut rng,
+    )
+}
+
+fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
+    train_triples: &[crate::dataset::TripleIds],
+    num_entities: usize,
+    num_relations: usize,
+    config: &BurnTrainConfig,
+    device: &B::Device,
+    rng: &mut R,
+) -> BurnTrainResult {
     let mut model = init_model::<B>(
         num_entities,
         num_relations,
@@ -201,7 +246,7 @@ pub fn train_complex<B: AutodiffBackend>(
         // Shuffle.
         {
             use rand::seq::SliceRandom;
-            indices.shuffle(&mut rand::rng());
+            indices.shuffle(rng);
         }
 
         let mut epoch_loss = 0.0_f64;
@@ -498,6 +543,55 @@ pub fn train_kge<B: AutodiffBackend>(
     config: &BurnTrainConfig,
     device: &B::Device,
 ) -> BurnKgeResult {
+    train_kge_impl::<B, _>(
+        train_triples,
+        num_entities,
+        num_relations,
+        model_type,
+        config,
+        device,
+        &mut rand::rng(),
+    )
+}
+
+/// Like [`train_kge`], but reproducible: seeds the backend RNG used for
+/// parameter initialization (`B::seed`) and the per-epoch shuffle.
+///
+/// The same seed, data, config and backend give the same embeddings, as
+/// long as nothing else draws from the backend RNG concurrently (on
+/// `burn-ndarray` it is process-wide).
+pub fn train_kge_seeded<B: AutodiffBackend>(
+    train_triples: &[crate::dataset::TripleIds],
+    num_entities: usize,
+    num_relations: usize,
+    model_type: BurnModelType,
+    config: &BurnTrainConfig,
+    device: &B::Device,
+    seed: u64,
+) -> BurnKgeResult {
+    use rand::SeedableRng;
+    B::seed(device, seed);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    train_kge_impl::<B, _>(
+        train_triples,
+        num_entities,
+        num_relations,
+        model_type,
+        config,
+        device,
+        &mut rng,
+    )
+}
+
+fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
+    train_triples: &[crate::dataset::TripleIds],
+    num_entities: usize,
+    num_relations: usize,
+    model_type: BurnModelType,
+    config: &BurnTrainConfig,
+    device: &B::Device,
+    rng: &mut R,
+) -> BurnKgeResult {
     let ent_dim = model_type.entity_dim(config.dim);
     let rel_dim = model_type.relation_dim(config.dim);
     let mk = |rows, cols| {
@@ -529,7 +623,7 @@ pub fn train_kge<B: AutodiffBackend>(
     for _epoch in 0..config.epochs {
         {
             use rand::seq::SliceRandom;
-            indices.shuffle(&mut rand::rng());
+            indices.shuffle(rng);
         }
         // Accumulate the detached loss on-device and read it once per epoch.
         // Reading the loss every batch (into_scalar) forces a CPU<->GPU sync that
