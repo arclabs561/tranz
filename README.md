@@ -41,6 +41,13 @@ evaluation on the test split.
 |-------|--------|-----|--------|-----|-----|------|
 | ComplEx | 1-N + label smoothing + reciprocals | 100 | 50 | **0.424** | 0.398 | 0.476 |
 
+The table was produced by tranz 0.8, whose evaluator used optimistic ranks
+(entities tied with the target did not count) and, with `--reciprocals`, ranked
+heads and tails of both each fact and its reciprocal. PyKEEN and the
+reciprocal protocol of Lacroix et al. 2018 use realistic ranks (a tie counts
+1/2) and rank tails only, once per direction; the current evaluator does both,
+so rerun before comparing.
+
 Published ComplEx MRR on WN18RR is 0.475 (Lacroix et al. 2018, with Adagrad + N3
 regularization). The reproduced command below leaves N3 off; pass
 `--n3-reg <coefficient>` to enable the Burn trainer's weighted nuclear-3 penalty
@@ -59,28 +66,29 @@ The other three models train end to end on WN18RR too; see the
 
 ## Library usage
 
-```rust
+```rust,no_run
 use tranz::{TransE, DistMult, Scorer};
 use tranz::dataset::{load_dataset, FilterIndex, InternedDatasetExt};
-use tranz::eval::evaluate_link_prediction;
+use tranz::eval::evaluate_link_prediction_reciprocal;
 
 // Load dataset (types from lattix::kge)
 let ds = load_dataset("data/WN18RR".as_ref()).unwrap();
 let mut interned = ds.into_interned();
+let num_relations = interned.num_relations();
 interned.add_reciprocals();
 
 // Create model and query
 let model = DistMult::new(interned.num_entities(), interned.num_relations(), 200);
 let top10 = model.top_k_tails(0, 0, 10);
 
-// Evaluate (filtered link prediction)
+// Evaluate (filtered link prediction, tails only for each direction)
 let filter = FilterIndex::from_dataset(&interned);
-let metrics = evaluate_link_prediction(&model, &interned.test, &filter, interned.num_entities());
+let result = evaluate_link_prediction_reciprocal(&model, &interned.test, &filter, num_relations);
 ```
 
 ### Generic triple loading
 
-```rust
+```rust,no_run
 use tranz::dataset::{Dataset, DatasetExt};
 
 let ds = Dataset::load_flexible("my_graph.tsv".as_ref()).unwrap();
@@ -96,7 +104,7 @@ digests, byte sizes, and evaluation metrics when `--eval` is used. With the
 `artifact-manifest` feature, `load_embedding_manifest` and
 `verify_embedding_manifest` read the manifest back and check the exported files.
 
-```rust
+```rust,ignore
 use tranz::io::{
     export_embeddings, flatten_matrix, load_embedding_manifest, verify_embedding_manifest,
 };
@@ -129,7 +137,7 @@ let q = Query::anchor(0, 0).then(1);
 // Intersection: (0 -r0-> ?) AND (1 -r1-> ?)
 let q = Query::intersection(vec![Query::anchor(0, 0), Query::anchor(1, 1)]);
 
-// Intersect-then-project (pi): (0 -r0-> V AND 1 -r1-> V) -r2-> ?
+// Intersect-then-project (ip): (0 -r0-> V AND 1 -r1-> V) -r2-> ?
 let q = Query::intersection(vec![Query::anchor(0, 0), Query::anchor(1, 1)]).then(2);
 
 let top10 = answer_query_topk(&model, &q, &QueryConfig::default(), 10);
@@ -176,8 +184,10 @@ Training runs on the Burn backend, selected by feature:
 All four models train with 1-N (1vsAll) scoring: every entity is scored per
 query via matmul + softmax cross-entropy, optimized with AdamW. Label smoothing
 is optional.
+`train_kge_seeded` (and `train_complex_seeded`, `train_tcomplex_seeded`) take
+a seed for the initialization and shuffle RNGs, so a run can be repeated.
 
-```rust
+```rust,ignore
 use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
 
 type B = burn::backend::Autodiff<burn_ndarray::NdArray>;

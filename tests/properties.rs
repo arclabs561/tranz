@@ -282,7 +282,7 @@ fn top_k_best_is_actually_best() {
     let best_idx = all
         .iter()
         .enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .min_by(|a, b| a.1.total_cmp(b.1))
         .unwrap()
         .0;
     assert_eq!(
@@ -299,7 +299,7 @@ fn top_k_heads_best_is_actually_best() {
     let best_idx = all
         .iter()
         .enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .min_by(|a, b| a.1.total_cmp(b.1))
         .unwrap()
         .0;
     assert_eq!(
@@ -330,7 +330,7 @@ fn top_k_relations_best_is_actually_best() {
     let best_idx = all
         .iter()
         .enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .min_by(|a, b| a.1.total_cmp(b.1))
         .unwrap()
         .0;
     assert_eq!(

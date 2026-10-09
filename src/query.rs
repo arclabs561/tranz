@@ -21,8 +21,8 @@
 //! | 3p | `a -r1-> V1 -r2-> V2 -r3-> ?` | three-hop chain |
 //! | 2i | `(a1 -r1-> ?) AND (a2 -r2-> ?)` | intersection |
 //! | 3i | `(a1 -r1-> ?) AND ... AND (a3 -r3-> ?)` | 3-way intersection |
-//! | pi | `(a1 -r1-> V AND a2 -r2-> V) -r3-> ?` | intersect then project |
-//! | ip | `(a1 -r1-> V -r2-> ?) AND (a2 -r3-> ?)` | project then intersect |
+//! | ip | `(a1 -r1-> V AND a2 -r2-> V) -r3-> ?` | intersect then project |
+//! | pi | `(a1 -r1-> V -r2-> ?) AND (a2 -r3-> ?)` | project then intersect |
 //! | 2u | `(a1 -r1-> ?) OR (a2 -r2-> ?)` | union |
 //! | up | `(a1 -r1-> ? OR a2 -r2-> ?) -r3-> ?` | union then project |
 //!
@@ -392,7 +392,7 @@ mod tests {
         let best = scores
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap();
         assert_eq!(best.0, 6, "Entity 6 should score best for (2, 3, ?)");
     }
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_query_intersect_then_project() {
+    fn ip_query_intersect_then_project() {
         let model = ChainModel { n: 20 };
         let config = QueryConfig {
             t_norm_projection: LogicFamily::Godel,
@@ -498,12 +498,12 @@ mod tests {
             beam_k: 20,
             ..QueryConfig::default()
         };
-        // pi: (entity 0 -rel 4-> V) AND (entity 2 -rel 2-> V), then V -rel 0-> ?
+        // ip: (entity 0 -rel 4-> V) AND (entity 2 -rel 2-> V), then V -rel 0-> ?
         // Both branches agree on V=5, so intersection peaks at V=5.
         // Then (5, 0, ?) → best is entity 6.
         let query = Query::intersection(vec![Query::anchor(0, 4), Query::anchor(2, 2)]).then(0);
         let top = answer_query_topk(&model, &query, &config, 1);
-        assert_eq!(top[0].0, 6, "pi query should find entity 6");
+        assert_eq!(top[0].0, 6, "ip query should find entity 6");
     }
 
     #[test]

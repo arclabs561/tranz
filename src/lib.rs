@@ -24,6 +24,11 @@
 
 #![warn(missing_docs)]
 
+// Compile and run the README's Rust examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 #[cfg(any(feature = "burn-ndarray", feature = "burn-wgpu"))]
 pub mod burn_temporal;
 #[cfg(any(feature = "burn-ndarray", feature = "burn-wgpu"))]
@@ -162,15 +167,11 @@ pub(crate) fn top_k_from_scores_descending(scores: &[f32], k: usize) -> Vec<(usi
 }
 
 fn score_id_order(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
-    a.1.partial_cmp(&b.1)
-        .unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| a.0.cmp(&b.0))
+    a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
 }
 
 fn score_id_desc_order(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
-    b.1.partial_cmp(&a.1)
-        .unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| a.0.cmp(&b.0))
+    b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,6 +1290,35 @@ mod tests {
         let scores = model.score_all_tails(0, 0);
         assert_eq!(scores.len(), 10);
         assert!(scores.iter().all(|s| s.is_finite()));
+    }
+
+    /// NaN scores must neither panic the top-k sort nor be ranked as best.
+    #[test]
+    fn top_k_tails_with_nan_scores_skips_nan() {
+        struct NanEvery3rd;
+        impl Scorer for NanEvery3rd {
+            fn score(&self, _h: usize, _r: usize, t: usize) -> f32 {
+                if t.is_multiple_of(3) {
+                    f32::NAN
+                } else {
+                    ((t * 7) % 50) as f32
+                }
+            }
+            fn num_entities(&self) -> usize {
+                300
+            }
+        }
+        for k in [10, 300] {
+            let top = NanEvery3rd.top_k_tails(0, 0, k);
+            assert_eq!(top.len(), k);
+            let finite = top.iter().take_while(|&&(_, s)| !s.is_nan()).count();
+            assert_eq!(
+                finite,
+                k.min(200),
+                "NaN ranked ahead of a finite score: {top:?}"
+            );
+            assert!(top[..finite].windows(2).all(|w| w[0].1 <= w[1].1));
+        }
     }
 
     #[test]
