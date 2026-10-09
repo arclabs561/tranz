@@ -30,7 +30,7 @@ features = ["burn-ndarray"]
 
 [dependencies]
 rand = { version = "0.9", optional = true }
-lattix = { version = "0.6", default-features = false, features = ["kge"] }
+lattix = { version = "0.8", default-features = false, features = ["kge"] }
 rayon = "1"
 thiserror = "2"
 tnorms = "0.2.0"
