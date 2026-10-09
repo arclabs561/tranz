@@ -467,7 +467,7 @@ fn cmd_train(args: &[String]) {
     // Optional evaluation.
     if do_eval && !interned.test.is_empty() {
         use tranz::dataset::FilterIndex;
-        use tranz::eval::evaluate_link_prediction_detailed;
+        use tranz::eval::{evaluate_link_prediction_detailed, evaluate_link_prediction_reciprocal};
 
         eprintln!(
             "Evaluating on test set ({} triples)...",
@@ -475,7 +475,18 @@ fn cmd_train(args: &[String]) {
         );
         let filter = FilterIndex::from_dataset(&interned);
         let scorer = result.to_scorer();
-        let eval = evaluate_link_prediction_detailed(scorer.as_ref(), &interned.test, &filter);
+        let eval = if reciprocals {
+            // The test split holds each fact and its reciprocal; rank tails only.
+            let num_original_relations = interned.num_relations() / 2;
+            evaluate_link_prediction_reciprocal(
+                scorer.as_ref(),
+                &interned.test,
+                &filter,
+                num_original_relations,
+            )
+        } else {
+            evaluate_link_prediction_detailed(scorer.as_ref(), &interned.test, &filter)
+        };
         let m = eval.metrics;
         println!("MRR:      {:.4}", m.mrr);
         println!("  head:   {:.4}", m.head_mrr);

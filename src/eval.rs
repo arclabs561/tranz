@@ -12,10 +12,21 @@
 //!
 //! ## Tie-breaking
 //!
-//! This implementation uses **optimistic** tie-breaking: only entities with
-//! strictly better (lower) scores than the target increase the rank. Entities
-//! with the same score as the target do not count. This gives the best-case
-//! rank among tied entities.
+//! Ranks are **realistic** (PyKEEN's default): each entity with a strictly
+//! better (lower) score adds 1 to the rank and each entity tied with the
+//! target adds 1/2, which is the expected rank under a uniformly random
+//! order among ties. A model that scores everything the same therefore gets
+//! MRR about 2/N, not 1.0. Versions up to 0.8 used optimistic ranks (ties
+//! did not count).
+//!
+//! ## Reciprocal relations
+//!
+//! For a dataset augmented with
+//! [`add_reciprocals`](crate::dataset::InternedDatasetExt::add_reciprocals),
+//! use [`evaluate_link_prediction_reciprocal`], which ranks tails only, once
+//! for `(h, r, ?)` and once for `(t, r_inv, ?)` (Lacroix et al. 2018).
+//! [`evaluate_link_prediction`] ranks heads and tails of every test triple,
+//! so on an augmented test split it would score each fact four times.
 //!
 //! ## Parallelism
 //!
@@ -37,6 +48,41 @@ use crate::Scorer;
 /// to rank 1 because `NaN < x` is always false.
 pub(crate) fn beats(competitor: f32, target: f32) -> bool {
     competitor.is_finite() && (target.is_nan() || competitor < target)
+}
+
+/// Running count for one realistic filtered rank.
+#[derive(Default)]
+struct RankCount {
+    better: u32,
+    tied: u32,
+}
+
+impl RankCount {
+    fn add(&mut self, competitor: f32, target: f32) {
+        if beats(competitor, target) {
+            self.better += 1;
+        } else if competitor.is_finite() && competitor == target {
+            self.tied += 1;
+        }
+    }
+
+    /// `1 + better + tied / 2`: the expected rank under a random order among ties.
+    fn rank(&self) -> f64 {
+        1.0 + self.better as f64 + 0.5 * self.tied as f64
+    }
+}
+
+/// Realistic filtered rank of `target` within `scores`, skipping the target
+/// itself and every id in `known`.
+fn filtered_rank(scores: &[f32], target: usize, known: &std::collections::HashSet<usize>) -> f64 {
+    let target_score = scores[target];
+    let mut count = RankCount::default();
+    for (id, &score) in scores.iter().enumerate() {
+        if id != target && !known.contains(&id) {
+            count.add(score, target_score);
+        }
+    }
+    count.rank()
 }
 
 /// Link prediction metrics.
@@ -107,53 +153,22 @@ pub fn evaluate_link_prediction_detailed(
     // Parallel: each test triple produces (relation, tail_rank, head_rank).
     // Uses batch scoring (score_all_tails / score_all_heads) for ~N-fold speedup
     // over per-entity score() calls, where N = num_entities.
-    let triple_ranks: Vec<(usize, u32, u32)> = test_triples
+    let triple_ranks: Vec<(usize, f64, f64)> = test_triples
         .par_iter()
         .map(|triple| {
             let (h, r, t) = (triple.head, triple.relation, triple.tail);
-
-            // Tail prediction: score all entities as tail replacements.
-            let tail_scores = model.score_all_tails(h, r);
-            let target_tail_score = tail_scores[t];
-            let known_tails = filter.known_tails(h, r);
-            let mut tail_rank = 1u32;
-            for (t_prime, &score) in tail_scores.iter().enumerate() {
-                if t_prime == t {
-                    continue;
-                }
-                if known_tails.contains(&t_prime) {
-                    continue;
-                }
-                if beats(score, target_tail_score) {
-                    tail_rank += 1;
-                }
-            }
-
-            // Head prediction: score all entities as head replacements.
-            let head_scores = model.score_all_heads(r, t);
-            let target_head_score = head_scores[h];
-            let known_heads = filter.known_heads(r, t);
-            let mut head_rank = 1u32;
-            for (h_prime, &score) in head_scores.iter().enumerate() {
-                if h_prime == h {
-                    continue;
-                }
-                if known_heads.contains(&h_prime) {
-                    continue;
-                }
-                if beats(score, target_head_score) {
-                    head_rank += 1;
-                }
-            }
-
+            let tail_rank =
+                filtered_rank(&model.score_all_tails(h, r), t, filter.known_tails(h, r));
+            let head_rank =
+                filtered_rank(&model.score_all_heads(r, t), h, filter.known_heads(r, t));
             (r, tail_rank, head_rank)
         })
         .collect();
 
     // Aggregate metrics with head/tail split.
-    let tail_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, tr, _)| tr).collect();
-    let head_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, _, hr)| hr).collect();
-    let all_ranks: Vec<u32> = tail_ranks
+    let tail_ranks: Vec<f64> = triple_ranks.iter().map(|&(_, tr, _)| tr).collect();
+    let head_ranks: Vec<f64> = triple_ranks.iter().map(|&(_, _, hr)| hr).collect();
+    let all_ranks: Vec<f64> = tail_ranks
         .iter()
         .chain(head_ranks.iter())
         .copied()
@@ -163,8 +178,8 @@ pub fn evaluate_link_prediction_detailed(
     metrics.head_mrr = mrr(&head_ranks);
 
     // Per-relation metrics.
-    let mut per_rel_tail: HashMap<usize, Vec<u32>> = HashMap::new();
-    let mut per_rel_head: HashMap<usize, Vec<u32>> = HashMap::new();
+    let mut per_rel_tail: HashMap<usize, Vec<f64>> = HashMap::new();
+    let mut per_rel_head: HashMap<usize, Vec<f64>> = HashMap::new();
     for &(r, tr, hr) in &triple_ranks {
         per_rel_tail.entry(r).or_default().push(tr);
         per_rel_head.entry(r).or_default().push(hr);
@@ -178,7 +193,7 @@ pub fn evaluate_link_prediction_detailed(
     {
         let tr = per_rel_tail.get(&r).map(|v| v.as_slice()).unwrap_or(&[]);
         let hr = per_rel_head.get(&r).map(|v| v.as_slice()).unwrap_or(&[]);
-        let all: Vec<u32> = tr.iter().chain(hr.iter()).copied().collect();
+        let all: Vec<f64> = tr.iter().chain(hr.iter()).copied().collect();
         let mut m = compute_metrics(&all);
         m.tail_mrr = mrr(tr);
         m.head_mrr = mrr(hr);
@@ -191,31 +206,99 @@ pub fn evaluate_link_prediction_detailed(
     }
 }
 
-fn compute_metrics(ranks: &[u32]) -> Metrics {
+/// Evaluate a model trained with reciprocal relations (Lacroix et al. 2018).
+///
+/// `test_triples` is a test split augmented by
+/// [`add_reciprocals`](crate::dataset::InternedDatasetExt::add_reciprocals),
+/// and `num_relations` is the number of original relations (before
+/// augmentation). Every triple is ranked by tail prediction only: a triple
+/// with relation `r < num_relations` is the fact's tail query `(h, r, ?)`,
+/// and its reciprocal `(t, r + num_relations, ?)` is the fact's head query.
+/// `tail_mrr` and `head_mrr` report those two groups; `mrr` and the other
+/// metrics average over both. Per-relation metrics are keyed by the original
+/// relation id. Filtering and tie handling are as in
+/// [`evaluate_link_prediction_detailed`].
+pub fn evaluate_link_prediction_reciprocal(
+    model: &(dyn Scorer + Sync),
+    test_triples: &[TripleIds],
+    filter: &FilterIndex,
+    num_relations: usize,
+) -> EvalResult {
+    if test_triples.is_empty() {
+        return EvalResult {
+            metrics: Metrics::default(),
+            per_relation: HashMap::new(),
+        };
+    }
+
+    // (original relation, is_inverse, rank)
+    let ranks: Vec<(usize, bool, f64)> = test_triples
+        .par_iter()
+        .map(|triple| {
+            let (h, r, t) = (triple.head, triple.relation, triple.tail);
+            let rank = filtered_rank(&model.score_all_tails(h, r), t, filter.known_tails(h, r));
+            let inverse = r >= num_relations;
+            let original = if inverse { r - num_relations } else { r };
+            (original, inverse, rank)
+        })
+        .collect();
+
+    let split = |rows: &mut dyn Iterator<Item = &(usize, bool, f64)>| {
+        let (mut tail, mut head) = (Vec::new(), Vec::new());
+        for &(_, inverse, rank) in rows {
+            if inverse {
+                head.push(rank);
+            } else {
+                tail.push(rank);
+            }
+        }
+        let all: Vec<f64> = tail.iter().chain(head.iter()).copied().collect();
+        let mut m = compute_metrics(&all);
+        m.tail_mrr = mrr(&tail);
+        m.head_mrr = mrr(&head);
+        m
+    };
+
+    let metrics = split(&mut ranks.iter());
+    let mut relations: Vec<usize> = ranks.iter().map(|&(r, _, _)| r).collect();
+    relations.sort_unstable();
+    relations.dedup();
+    let per_relation = relations
+        .into_iter()
+        .map(|r| (r, split(&mut ranks.iter().filter(|row| row.0 == r))))
+        .collect();
+
+    EvalResult {
+        metrics,
+        per_relation,
+    }
+}
+
+fn compute_metrics(ranks: &[f64]) -> Metrics {
     if ranks.is_empty() {
         return Metrics::default();
     }
     let n = ranks.len() as f64;
     let mrr_val = mrr(ranks);
-    let mean_rank = ranks.iter().map(|&r| r as f64).sum::<f64>() / n;
-    let hits = |k: u32| ranks.iter().filter(|&&r| r <= k).count() as f64 / n;
+    let mean_rank = ranks.iter().sum::<f64>() / n;
+    let hits = |k: f64| ranks.iter().filter(|&&r| r <= k).count() as f64 / n;
     Metrics {
         mrr: mrr_val,
         head_mrr: 0.0,
         tail_mrr: 0.0,
         mean_rank: mean_rank as f32,
-        hits_at_1: hits(1) as f32,
-        hits_at_3: hits(3) as f32,
-        hits_at_10: hits(10) as f32,
+        hits_at_1: hits(1.0) as f32,
+        hits_at_3: hits(3.0) as f32,
+        hits_at_10: hits(10.0) as f32,
     }
 }
 
-fn mrr(ranks: &[u32]) -> f32 {
+fn mrr(ranks: &[f64]) -> f32 {
     if ranks.is_empty() {
         return 0.0;
     }
     let n = ranks.len() as f64;
-    (ranks.iter().map(|&r| 1.0 / r as f64).sum::<f64>() / n) as f32
+    (ranks.iter().map(|&r| 1.0 / r).sum::<f64>() / n) as f32
 }
 
 /// Fast approximate evaluation using random negative sampling.
@@ -228,8 +311,8 @@ fn mrr(ranks: &[u32]) -> f32 {
 /// large enough (500-1000 is typical). Runs `num_entities / num_candidates`
 /// times faster than exact evaluation.
 ///
-/// Based on Cornell et al. (2024), "A Fast and Scalable Method for Evaluation
-/// of KGE Models."
+/// Based on Cornell et al. (2024), "Are We Wasting Time? A Fast, Accurate
+/// Performance Evaluation Framework for Knowledge Graph Link Predictors."
 pub fn evaluate_link_prediction_sampled(
     model: &(dyn Scorer + Sync),
     test_triples: &[TripleIds],
@@ -241,7 +324,7 @@ pub fn evaluate_link_prediction_sampled(
         return Metrics::default();
     }
 
-    let triple_ranks: Vec<(u32, u32)> = test_triples
+    let triple_ranks: Vec<(f64, f64)> = test_triples
         .par_iter()
         .map_init(rand::rng, |rng, triple| {
             use rand::seq::index::sample;
@@ -252,16 +335,14 @@ pub fn evaluate_link_prediction_sampled(
                 let target_score = model.score(h, r, t);
                 let known_tails = filter.known_tails(h, r);
                 let candidates = sample(rng, num_entities, num_candidates.min(num_entities));
-                let mut rank = 1u32;
+                let mut count = RankCount::default();
                 for idx in candidates.iter() {
                     if idx == t || known_tails.contains(&idx) {
                         continue;
                     }
-                    if beats(model.score(h, r, idx), target_score) {
-                        rank += 1;
-                    }
+                    count.add(model.score(h, r, idx), target_score);
                 }
-                rank
+                count.rank()
             };
 
             // Head prediction: sample candidates + correct answer.
@@ -269,25 +350,23 @@ pub fn evaluate_link_prediction_sampled(
                 let target_score = model.score(h, r, t);
                 let known_heads = filter.known_heads(r, t);
                 let candidates = sample(rng, num_entities, num_candidates.min(num_entities));
-                let mut rank = 1u32;
+                let mut count = RankCount::default();
                 for idx in candidates.iter() {
                     if idx == h || known_heads.contains(&idx) {
                         continue;
                     }
-                    if beats(model.score(idx, r, t), target_score) {
-                        rank += 1;
-                    }
+                    count.add(model.score(idx, r, t), target_score);
                 }
-                rank
+                count.rank()
             };
 
             (tail_rank, head_rank)
         })
         .collect();
 
-    let tail_ranks: Vec<u32> = triple_ranks.iter().map(|&(tr, _)| tr).collect();
-    let head_ranks: Vec<u32> = triple_ranks.iter().map(|&(_, hr)| hr).collect();
-    let all_ranks: Vec<u32> = tail_ranks
+    let tail_ranks: Vec<f64> = triple_ranks.iter().map(|&(tr, _)| tr).collect();
+    let head_ranks: Vec<f64> = triple_ranks.iter().map(|&(_, hr)| hr).collect();
+    let all_ranks: Vec<f64> = tail_ranks
         .iter()
         .chain(head_ranks.iter())
         .copied()
@@ -363,12 +442,19 @@ mod tests {
             }
         }
 
+        // Every other tail of (0, 0, ?) and every other head of (?, 0, 0)
+        // is a known triple, so both rankings filter all competitors. (The
+        // head side used to pass only because optimistic ranks ignored ties.)
         let all = vec![
             tid(0, 0, 0),
             tid(0, 0, 1),
             tid(0, 0, 2),
             tid(0, 0, 3),
             tid(0, 0, 4),
+            tid(1, 0, 0),
+            tid(2, 0, 0),
+            tid(3, 0, 0),
+            tid(4, 0, 0),
         ];
         let test = vec![tid(0, 0, 0)];
         let filter = make_filter(&all);
@@ -388,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn tie_breaking_is_optimistic() {
+    fn tie_breaking_is_realistic() {
         struct TiedModel;
         impl Scorer for TiedModel {
             fn score(&self, _h: usize, _r: usize, _t: usize) -> f32 {
@@ -399,13 +485,82 @@ mod tests {
             }
         }
 
+        // Two unfiltered competitors tie with the target on each side, so
+        // the realistic rank is 1 + 2/2 = 2 (optimistic would say 1).
         let test = vec![tid(0, 0, 1)];
         let filter = make_filter(&test);
         let metrics = evaluate_link_prediction(&TiedModel, &test, &filter, 3);
+        assert!((metrics.mrr - 0.5).abs() < 1e-6, "MRR = {}", metrics.mrr);
+        assert_eq!(metrics.hits_at_1, 0.0);
+        assert!((metrics.mean_rank - 2.0).abs() < 1e-6);
+    }
+
+    /// A model that scores every triple the same carries no information,
+    /// so its expected rank is (N + 1) / 2 and MRR is about 2/N, not 1.0.
+    #[test]
+    fn constant_score_model_has_mrr_about_two_over_n() {
+        struct ConstantModel;
+        const N: usize = 1000;
+        impl Scorer for ConstantModel {
+            fn score(&self, _h: usize, _r: usize, _t: usize) -> f32 {
+                0.0
+            }
+            fn num_entities(&self) -> usize {
+                N
+            }
+        }
+
+        let test: Vec<_> = (0..20).map(|i| tid(i, 0, i + 1)).collect();
+        let filter = make_filter(&test);
+        let metrics = evaluate_link_prediction(&ConstantModel, &test, &filter, N);
+        let expected = 2.0 / (N as f32 + 1.0);
         assert!(
-            (metrics.hits_at_1 - 1.0).abs() < 1e-6,
-            "Optimistic tie-breaking: rank should be 1 when all scores tie"
+            (metrics.mrr - expected).abs() < 1e-5,
+            "MRR = {}, expected about 2/N = {expected}",
+            metrics.mrr
         );
+        assert_eq!(metrics.hits_at_10, 0.0);
+        let sampled = evaluate_link_prediction_sampled(&ConstantModel, &test, &filter, N, N);
+        assert!(
+            (sampled.mrr - expected).abs() < 1e-5,
+            "sampled MRR = {}",
+            sampled.mrr
+        );
+    }
+
+    /// Reciprocal protocol (Lacroix et al. 2018): each fact is ranked once
+    /// as (h, r, ?) and once as (t, r_inv, ?), tails only. Head queries on
+    /// the augmented split would rank each fact four times.
+    #[test]
+    fn reciprocal_eval_ranks_tails_only_once_per_direction() {
+        // 1 original relation, so r_inv = 1. Fact (0, 0, 1).
+        struct DirModel;
+        impl Scorer for DirModel {
+            fn score(&self, h: usize, r: usize, t: usize) -> f32 {
+                match (h, r, t) {
+                    (0, 0, 1) => 0.0, // forward query: target is best
+                    (1, 1, 0) => 9.0, // inverse query: target is worst
+                    _ => 1.0,
+                }
+            }
+            fn num_entities(&self) -> usize {
+                3
+            }
+        }
+
+        let test = vec![tid(0, 0, 1), tid(1, 1, 0)];
+        let filter = make_filter(&test);
+        let result = evaluate_link_prediction_reciprocal(&DirModel, &test, &filter, 1);
+        let m = result.metrics;
+        assert!((m.tail_mrr - 1.0).abs() < 1e-6, "tail {}", m.tail_mrr);
+        assert!((m.head_mrr - 1.0 / 3.0).abs() < 1e-6, "head {}", m.head_mrr);
+        assert!(
+            (m.mrr - (1.0 + 1.0 / 3.0) / 2.0).abs() < 1e-6,
+            "mrr {}",
+            m.mrr
+        );
+        assert_eq!(result.per_relation.len(), 1);
+        assert!((result.per_relation[&0].mrr - m.mrr).abs() < 1e-6);
     }
 
     #[test]
