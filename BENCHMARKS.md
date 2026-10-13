@@ -43,6 +43,11 @@ tranz train --data data/WN18RR --model complex --dim 100 \
 | Hits@1 | 0.398 |
 | Hits@10 | 0.476 |
 
+These are historical results: the old evaluator used optimistic ties and
+ranked both heads and tails for each original and reciprocal fact. The current
+evaluator uses realistic ties and, with reciprocals, ranks tails once per
+direction. Rerun this configuration before comparing results.
+
 The published ComplEx result for WN18RR is 0.475 MRR (Lacroix et al. 2018,
 with Adagrad and N3 regularization). The current trainer supports N3 for
 ComplEx and DistMult with `--n3-reg <coefficient>`, but it uses AdamW rather
