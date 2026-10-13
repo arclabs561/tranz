@@ -300,7 +300,7 @@ fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
             let t_nll = tail_log_probs
                 .clone()
                 .gather(1, tail_ids)
-                .squeeze::<1>()
+                .reshape([actual_bs])
                 .neg()
                 .mean();
 
@@ -308,7 +308,7 @@ fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
             let h_nll = head_log_probs
                 .clone()
                 .gather(1, head_ids)
-                .squeeze::<1>()
+                .reshape([actual_bs])
                 .neg()
                 .mean();
 
@@ -665,13 +665,13 @@ fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
             let t_nll = tail_lp
                 .clone()
                 .gather(1, tails.clone().unsqueeze_dim(1))
-                .squeeze::<1>()
+                .reshape([bs])
                 .neg()
                 .mean();
             let h_nll = head_lp
                 .clone()
                 .gather(1, heads.clone().unsqueeze_dim(1))
-                .squeeze::<1>()
+                .reshape([bs])
                 .neg()
                 .mean();
             let nll = (t_nll + h_nll) / 2.0;
