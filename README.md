@@ -41,7 +41,7 @@ evaluation on the test split.
 |-------|--------|-----|--------|-----|-----|------|
 | ComplEx | 1-N + label smoothing + reciprocals | 100 | 50 | **0.424** | 0.398 | 0.476 |
 
-The table was produced by tranz 0.8, whose evaluator used optimistic ranks
+This historical result predates the evaluator corrections. That evaluator used optimistic ranks
 (entities tied with the target did not count) and, with `--reciprocals`, ranked
 heads and tails of both each fact and its reciprocal. PyKEEN and the
 reciprocal protocol of Lacroix et al. 2018 use realistic ranks (a tie counts
