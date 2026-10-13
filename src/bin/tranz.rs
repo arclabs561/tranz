@@ -35,6 +35,34 @@ fn main() {
     }
 }
 
+fn numeric_argument<T: std::str::FromStr>(args: &[String], index: &mut usize) -> T {
+    let option = &args[*index];
+    *index += 1;
+    let value = args.get(*index).unwrap_or_else(|| {
+        eprintln!("Missing numeric value for {option}");
+        std::process::exit(1);
+    });
+    value.parse().unwrap_or_else(|_| {
+        eprintln!("Invalid numeric value for {option}: {value}");
+        std::process::exit(1);
+    })
+}
+
+fn print_training_completion(start: Instant, losses: &[f32]) {
+    if let Some(loss) = losses.last() {
+        eprintln!(
+            "Training complete in {:.1}s, final loss: {:.4}",
+            start.elapsed().as_secs_f32(),
+            loss,
+        );
+    } else {
+        eprintln!(
+            "Initialization complete in {:.1}s; zero epochs, no training loss",
+            start.elapsed().as_secs_f32(),
+        );
+    }
+}
+
 fn print_usage() {
     eprintln!(
         "tranz -- point-embedding knowledge graph completion
@@ -51,7 +79,7 @@ TRAIN OPTIONS:
     --model <MODEL>       complex, distmult, rotate, transe (default: transe)
                           Recommended: complex --label-smoothing 0.1 --reciprocals
     --dim <N>             Embedding dimension (default: 200)
-    --epochs <N>          Training epochs (default: 500)
+    --epochs <N>          Training epochs; 0 exports initialized embeddings (default: 500)
     --batch-size <N>      Batch size (default: 512)
     --lr <F>              Learning rate (default: 0.001)
     --init-scale <F>      Init std for embeddings (default: 0.001)
@@ -129,8 +157,7 @@ fn cmd_predict(args: &[String]) {
                 relation = Some(args[i].clone());
             }
             "--k" => {
-                i += 1;
-                k = args[i].parse().unwrap();
+                k = numeric_argument(args, &mut i);
             }
             other => {
                 eprintln!("Unknown argument: {other}");
@@ -306,32 +333,25 @@ fn cmd_train(args: &[String]) {
                 };
             }
             "--init-scale" => {
-                i += 1;
-                init_scale = args[i].parse().unwrap();
+                init_scale = numeric_argument(args, &mut i);
             }
             "--dim" => {
-                i += 1;
-                dim = args[i].parse().unwrap();
+                dim = numeric_argument(args, &mut i);
             }
             "--epochs" => {
-                i += 1;
-                epochs = args[i].parse().unwrap();
+                epochs = numeric_argument(args, &mut i);
             }
             "--batch-size" => {
-                i += 1;
-                batch_size = args[i].parse().unwrap();
+                batch_size = numeric_argument(args, &mut i);
             }
             "--lr" => {
-                i += 1;
-                lr = args[i].parse().unwrap();
+                lr = numeric_argument(args, &mut i);
             }
             "--label-smoothing" => {
-                i += 1;
-                label_smoothing = args[i].parse().unwrap();
+                label_smoothing = numeric_argument(args, &mut i);
             }
             "--n3-reg" => {
-                i += 1;
-                n3_reg = args[i].parse().unwrap();
+                n3_reg = numeric_argument(args, &mut i);
             }
             "--reciprocals" => {
                 reciprocals = true;
@@ -436,11 +456,7 @@ fn cmd_train(args: &[String]) {
         &device,
     );
 
-    eprintln!(
-        "Training complete in {:.1}s, final loss: {:.4}",
-        start.elapsed().as_secs_f32(),
-        result.losses.last().unwrap(),
-    );
+    print_training_completion(start, &result.losses);
 
     // Export embeddings.
     let entity_vecs = result.entity_vecs.clone();
@@ -619,36 +635,28 @@ fn cmd_train_temporal(args: &[String]) {
                 data_dir = Some(PathBuf::from(&args[i]));
             }
             "--dim" => {
-                i += 1;
-                dim = args[i].parse().unwrap();
+                dim = numeric_argument(args, &mut i);
             }
             "--init-scale" => {
-                i += 1;
-                init_scale = args[i].parse().unwrap();
+                init_scale = numeric_argument(args, &mut i);
             }
             "--epochs" => {
-                i += 1;
-                epochs = args[i].parse().unwrap();
+                epochs = numeric_argument(args, &mut i);
             }
             "--batch-size" => {
-                i += 1;
-                batch_size = args[i].parse().unwrap();
+                batch_size = numeric_argument(args, &mut i);
             }
             "--lr" => {
-                i += 1;
-                lr = args[i].parse().unwrap();
+                lr = numeric_argument(args, &mut i);
             }
             "--label-smoothing" => {
-                i += 1;
-                label_smoothing = args[i].parse().unwrap();
+                label_smoothing = numeric_argument(args, &mut i);
             }
             "--time-smooth" => {
-                i += 1;
-                time_smooth = args[i].parse().unwrap();
+                time_smooth = numeric_argument(args, &mut i);
             }
             "--n3-reg" => {
-                i += 1;
-                n3_reg = args[i].parse().unwrap();
+                n3_reg = numeric_argument(args, &mut i);
             }
             "--reciprocals" => {
                 reciprocals = true;
@@ -724,11 +732,7 @@ fn cmd_train_temporal(args: &[String]) {
         time_smooth,
         &device,
     );
-    eprintln!(
-        "Training complete in {:.1}s, final loss: {:.4}",
-        start.elapsed().as_secs_f32(),
-        result.losses.last().unwrap(),
-    );
+    print_training_completion(start, &result.losses);
 
     eprintln!("Exporting embeddings to {}", output_dir.display());
     std::fs::create_dir_all(&output_dir).unwrap();
