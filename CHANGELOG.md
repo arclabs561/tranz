@@ -1,5 +1,22 @@
 # Changelog
 
+## Source history (unversioned)
+
+These source changes are not assigned to a package release here.
+
+- Numeric CLI options report missing or malformed values with exit status 1
+  before loading input, instead of panicking. Negative or overflowing unsigned
+  integers are rejected; floating-point domain policy is unchanged.
+  ([source](https://github.com/arclabs561/tranz/commit/e2e5cf1f7dea096de74e1944366de1e1432f3a28))
+- `train` and `train-temporal` accept zero epochs and export initialized
+  embeddings, reporting that no training loss exists. Burn training preserves
+  the batch axis for singleton batches, including a final one-item remainder.
+  ([source](https://github.com/arclabs561/tranz/commit/e2e5cf1f7dea096de74e1944366de1e1432f3a28))
+- Benchmark documentation labels the existing WN18RR result as historical,
+  predating realistic-tie and reciprocal-evaluation corrections. It requires
+  a rerun before comparison; no new benchmark measurement is reported.
+  ([source](https://github.com/arclabs561/tranz/commit/ef9728d853e9e9b6e1e2636b1e35942b7c29a516))
+
 ## [Unreleased]
 
 ## [0.8.0] - 2026-07-08
