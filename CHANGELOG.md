@@ -29,6 +29,9 @@ These source changes are not assigned to a package release here.
 
 ### Fixed
 
+- Static and temporal reciprocal augmentation now assigns a distinct inverse
+  relation name when an original relation already uses the conventional
+  `_inv` suffix. The fixed offset IDs and ordinary inverse names are retained.
 - Temporal link-prediction evaluation now uses realistic midranks for ties,
   matching static evaluation while preserving timestamp-aware filtering.
 - Sampled evaluation documentation now describes candidate-subset metrics

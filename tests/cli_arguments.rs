@@ -354,3 +354,59 @@ fn temporal_eval_protocol_matches_exported_embeddings() {
         }
     }
 }
+
+#[test]
+fn static_reciprocal_name_collision_exports_and_evaluates() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let data = sandbox.path().join("data");
+    let exported = sandbox.path().join("exported");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::write(data.join("train.txt"), "a\tr\tb\nb\tr_inv\tc\n").unwrap();
+    std::fs::write(data.join("valid.txt"), "").unwrap();
+    std::fs::write(data.join("test.txt"), "c\tr_inv\ta\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tranz"))
+        .args(["train", "--data"])
+        .arg(&data)
+        .args([
+            "--model",
+            "distmult",
+            "--dim",
+            "2",
+            "--batch-size",
+            "2",
+            "--epochs",
+            "0",
+            "--reciprocals",
+            "--eval",
+            "--output",
+        ])
+        .arg(&exported)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(stderr.contains("Relations: 4"), "{stderr}");
+    assert!(stderr.contains("zero epochs, no training loss"), "{stderr}");
+    assert!(stderr.contains("Evaluating on test set"), "{stderr}");
+    assert_embeddings(
+        &exported.join("relations.tsv"),
+        &["r", "r_inv", "r_inv_2", "r_inv_inv"],
+        2,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for label in [
+        "MRR:", "head:", "tail:", "MR:", "Hits@1:", "Hits@3:", "Hits@10:",
+    ] {
+        let value = stdout
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(label))
+            .unwrap_or_else(|| panic!("missing {label} in CLI output: {stdout}"))
+            .trim()
+            .parse::<f32>()
+            .unwrap();
+        assert!(value.is_finite(), "{label} was {value}: {stdout}");
+    }
+}
