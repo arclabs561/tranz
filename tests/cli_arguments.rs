@@ -216,3 +216,141 @@ fn positive_epochs_still_export_embeddings_and_loss() {
 fn positive_epochs_still_export_temporal_embeddings_and_loss() {
     check_export(true, 1);
 }
+
+#[test]
+fn temporal_eval_protocol_matches_exported_embeddings() {
+    use tranz::temporal::{load_temporal_dataset, TComplEx, TemporalScorer};
+    for reciprocals in [false, true] {
+        let sandbox = tempfile::tempdir().unwrap();
+        let data = sandbox.path().join("data");
+        let exported = sandbox.path().join("exported");
+        std::fs::create_dir(&data).unwrap();
+        // Several distinct queries exercise direction-specific relation vectors;
+        // reuse no training steps or assumed random initialization values.
+        std::fs::write(
+            data.join("train.txt"),
+            "a\tr\tb\t0\nb\ts\tc\t1\nc\tr\td\t0\nd\ts\te\t1\ne\tr\tf\t0\nf\ts\ta\t1\n",
+        )
+        .unwrap();
+        std::fs::write(data.join("valid.txt"), "").unwrap();
+        std::fs::write(
+            data.join("test.txt"),
+            "a\tr\tc\t0\nb\ts\td\t1\nc\tr\te\t1\nd\ts\tf\t0\ne\tr\ta\t0\nf\ts\tb\t1\na\ts\td\t1\nb\tr\te\t0\n",
+        )
+        .unwrap();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_tranz"));
+        cmd.args(["train-temporal", "--data"])
+            .arg(&data)
+            .args([
+                "--epochs",
+                "0",
+                "--dim",
+                "4",
+                "--init-scale",
+                "0.5",
+                "--eval",
+                "--output",
+            ])
+            .arg(&exported);
+        if reciprocals {
+            cmd.arg("--reciprocals");
+        }
+        let output = cmd.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut ds = load_temporal_dataset(&data).unwrap();
+        let original_relations = ds.num_relations();
+        if reciprocals {
+            ds.add_reciprocals();
+        }
+        let read = |name: &str| {
+            tranz::io::read_w2v_tsv(std::fs::File::open(exported.join(name)).unwrap())
+                .unwrap()
+                .1
+        };
+        let model = TComplEx::from_vecs(
+            read("entities.tsv"),
+            read("relations.tsv"),
+            read("times.tsv"),
+            4,
+        );
+        let known = ds.all_quads();
+        let mut heads = Vec::new();
+        let mut tails = Vec::new();
+        for q in &ds.test {
+            let target = model.score(q.head, q.relation, q.tail, q.time);
+            let rank = |head: bool| {
+                let mut better = 0;
+                let mut tied = 0;
+                for entity in 0..ds.num_entities() {
+                    let (h, t) = if head {
+                        (entity, q.tail)
+                    } else {
+                        (q.head, entity)
+                    };
+                    if (h, t) == (q.head, q.tail)
+                        || known.iter().any(|k| {
+                            k.head == h
+                                && k.tail == t
+                                && k.relation == q.relation
+                                && k.time == q.time
+                        })
+                    {
+                        continue;
+                    }
+                    let score = model.score(h, q.relation, t, q.time);
+                    better += usize::from(score < target);
+                    tied += usize::from(score == target);
+                }
+                // Independent optimistic/pessimistic endpoints, then midpoint.
+                ((1 + better) as f64 + (1 + better + tied) as f64) / 2.0
+            };
+            if reciprocals && q.relation >= original_relations {
+                heads.push(rank(false));
+            } else {
+                tails.push(rank(false));
+            }
+            if !reciprocals {
+                heads.push(rank(true));
+            }
+        }
+        let rr = |r: &[f64]| r.iter().map(|r| 1.0 / r).sum::<f64>() / r.len() as f64;
+        let all: Vec<f64> = heads.iter().chain(&tails).copied().collect();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        for (label, value, precision) in [
+            ("MRR:", rr(&all), 4),
+            ("head:", rr(&heads), 4),
+            ("tail:", rr(&tails), 4),
+            ("MR:", all.iter().sum::<f64>() / all.len() as f64, 1),
+            (
+                "Hits@1:",
+                all.iter().filter(|&&r| r <= 1.0).count() as f64 / all.len() as f64,
+                4,
+            ),
+            (
+                "Hits@3:",
+                all.iter().filter(|&&r| r <= 3.0).count() as f64 / all.len() as f64,
+                4,
+            ),
+            (
+                "Hits@10:",
+                all.iter().filter(|&&r| r <= 10.0).count() as f64 / all.len() as f64,
+                4,
+            ),
+        ] {
+            let actual = stdout
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(label))
+                .unwrap()
+                .trim();
+            assert_eq!(
+                actual,
+                format!("{:.*}", precision, value as f32),
+                "reciprocals={reciprocals}, {label}; {stdout}"
+            );
+        }
+    }
+}

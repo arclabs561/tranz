@@ -519,10 +519,197 @@ pub fn evaluate_temporal_link_prediction(
     metrics
 }
 
+/// Evaluate a reciprocal-augmented temporal split using tail queries only.
+///
+/// `num_relations` is the original relation count, before
+/// [`TemporalDataset::add_reciprocals`]. Each original `(h, r, t, time)` must
+/// have its inverse `(t, r + num_relations, h, time)` in `test`. The filter
+/// should contain all known true quads, including their reciprocals. Pairing
+/// and filter completeness are caller preconditions, not checked here.
+///
+/// Each input quad contributes one tail rank, filtering only completions at
+/// its timestamp. Original relation IDs contribute to `tail_mrr`; inverse
+/// IDs contribute to `head_mrr`. Overall metrics cover all input quads with
+/// the same realistic ties and nonfinite-score handling as
+/// [`evaluate_temporal_link_prediction`]. The old evaluator still scores both
+/// heads and tails of every input quad. Empty input returns zeroed metrics.
+///
+/// # Panics
+///
+/// For nonempty input, panics before scoring if `num_relations` is zero, the
+/// model has fewer than twice that many relations, or an input relation ID
+/// lies outside `0..2 * num_relations`. Entity and timestamp IDs must also be
+/// valid for the scorer, as in [`evaluate_temporal_link_prediction`].
+pub fn evaluate_temporal_link_prediction_reciprocal(
+    model: &dyn TemporalScorer,
+    test: &[QuadIds],
+    filter: &TemporalFilterIndex,
+    num_relations: usize,
+) -> Metrics {
+    if test.is_empty() {
+        return Metrics::default();
+    }
+    assert!(
+        num_relations > 0 && num_relations <= model.num_relations() / 2,
+        "original relation count must be positive and fit the reciprocal model"
+    );
+    assert!(
+        test.iter().all(|q| q.relation < 2 * num_relations),
+        "relation ID outside the reciprocal relation range"
+    );
+    let ranks: Vec<(bool, f64)> = test
+        .par_iter()
+        .map(|q| {
+            let scores = model.score_all_tails(q.head, q.relation, q.time);
+            let known = filter
+                .tails
+                .get(&(q.head, q.relation, q.time))
+                .unwrap_or(&EMPTY);
+            (
+                q.relation >= num_relations,
+                filtered_rank(&scores, q.tail, known),
+            )
+        })
+        .collect();
+    let tails: Vec<f64> = ranks
+        .iter()
+        .filter(|&&(inverse, _)| !inverse)
+        .map(|&(_, r)| r)
+        .collect();
+    let heads: Vec<f64> = ranks
+        .iter()
+        .filter(|&&(inverse, _)| inverse)
+        .map(|&(_, r)| r)
+        .collect();
+    let all: Vec<f64> = ranks.iter().map(|&(_, r)| r).collect();
+    let mut metrics = compute_metrics(&all);
+    metrics.tail_mrr = mrr(&tails);
+    metrics.head_mrr = mrr(&heads);
+    metrics
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    struct ReciprocalScores {
+        nan_forward: bool,
+    }
+    impl TemporalScorer for ReciprocalScores {
+        fn score(&self, _: usize, r: usize, t: usize, _: usize) -> f32 {
+            if r == 0 && t == 1 && self.nan_forward {
+                return f32::NAN;
+            }
+            if r == 0 {
+                [0.0, 1.0, 1.0, 2.0][t]
+            } else {
+                [2.0, 0.0, 2.0, 3.0][t]
+            }
+        }
+        fn num_entities(&self) -> usize {
+            4
+        }
+        fn num_relations(&self) -> usize {
+            2
+        }
+        fn num_timestamps(&self) -> usize {
+            2
+        }
+        fn score_all_heads(&self, _: usize, _: usize, _: usize) -> Vec<f32> {
+            panic!("reciprocal evaluation must not issue head queries")
+        }
+    }
+
+    #[test]
+    fn reciprocal_directional_ranks_keep_timestamp_filters_and_ties() {
+        let test = [QuadIds::new(0, 0, 1, 0), QuadIds::new(1, 1, 0, 0)];
+        let known = [
+            test[0],
+            test[1],
+            QuadIds::new(0, 0, 0, 0),
+            QuadIds::new(1, 1, 1, 1),
+        ];
+        let m = evaluate_temporal_link_prediction_reciprocal(
+            &ReciprocalScores { nan_forward: false },
+            &test,
+            &TemporalFilterIndex::from_quads(&known),
+            1,
+        );
+        // Forward: better entity filtered, target occupies positions 1/2.
+        // Inverse: better entity at another timestamp remains, positions 2/3.
+        assert_eq!(m.tail_mrr, 2.0 / 3.0);
+        assert_eq!(m.head_mrr, 0.4);
+        assert!((m.mrr - (2.0 / 3.0 + 0.4) / 2.0).abs() < 1e-7);
+        assert_eq!(m.mean_rank, 2.0);
+        assert_eq!(m.hits_at_1, 0.0);
+        assert_eq!(m.hits_at_3, 1.0);
+    }
+
+    #[test]
+    fn reciprocal_nan_target_preserves_finite_competitor_order() {
+        let test = [QuadIds::new(0, 0, 1, 0), QuadIds::new(1, 1, 0, 0)];
+        let m = evaluate_temporal_link_prediction_reciprocal(
+            &ReciprocalScores { nan_forward: true },
+            &test,
+            &TemporalFilterIndex::from_quads(&test),
+            1,
+        );
+        assert_eq!(m.tail_mrr, 0.25);
+        assert_eq!(m.head_mrr, 0.4);
+        assert_eq!(m.mean_rank, 3.25);
+    }
+
+    #[test]
+    fn reciprocal_constant_scores_and_empty_input() {
+        let model = TComplEx::from_vecs(
+            vec![vec![0.0, 0.0]; 4],
+            vec![vec![0.0, 0.0]; 2],
+            vec![vec![0.0, 0.0]],
+            1,
+        );
+        let test = [QuadIds::new(0, 0, 1, 0), QuadIds::new(1, 1, 0, 0)];
+        let filter = TemporalFilterIndex::from_quads(&test);
+        let m = evaluate_temporal_link_prediction_reciprocal(&model, &test, &filter, 1);
+        assert_eq!(m.mean_rank, 2.5);
+        assert_eq!(m.mrr, 0.4);
+        let empty = evaluate_temporal_link_prediction_reciprocal(&model, &[], &filter, 0);
+        assert_eq!(empty.mrr, 0.0);
+        assert_eq!(empty.mean_rank, 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "original relation count")]
+    fn reciprocal_rejects_zero_count_before_scoring() {
+        evaluate_temporal_link_prediction_reciprocal(
+            &ReciprocalScores { nan_forward: false },
+            &[QuadIds::new(99, 0, 99, 99)],
+            &TemporalFilterIndex::default(),
+            0,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "original relation count")]
+    fn reciprocal_rejects_overflowing_count_before_scoring() {
+        evaluate_temporal_link_prediction_reciprocal(
+            &ReciprocalScores { nan_forward: false },
+            &[QuadIds::new(99, 0, 99, 99)],
+            &TemporalFilterIndex::default(),
+            usize::MAX,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "relation ID outside")]
+    fn reciprocal_rejects_bad_relation_before_scoring() {
+        evaluate_temporal_link_prediction_reciprocal(
+            &ReciprocalScores { nan_forward: false },
+            &[QuadIds::new(99, 2, 99, 99)],
+            &TemporalFilterIndex::default(),
+            1,
+        );
+    }
 
     #[test]
     fn constant_scores_have_realistic_ranks() {
