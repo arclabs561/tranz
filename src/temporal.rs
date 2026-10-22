@@ -18,7 +18,7 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::dataset::Vocab;
-use crate::eval::{beats, Metrics};
+use crate::eval::{compute_metrics, filtered_rank, mrr, Metrics};
 
 /// One interned quad: `(head, relation, tail, time)` as dense ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -476,6 +476,12 @@ static EMPTY: std::sync::LazyLock<HashSet<usize>> = std::sync::LazyLock::new(Has
 /// `(h, r, ?, τ)` and the true head for `(?, r, t, τ)`, filtering other
 /// known-true completions **at the same timestamp**. Returns zeroed
 /// [`Metrics`] on an empty test set. Parallelized via rayon.
+///
+/// Uses the same realistic midranks as static link prediction: strictly better
+/// competitors add 1 and equal finite scores add 1/2, after filtering. Metrics
+/// use those midranks (not averages of metrics over random tie orders).
+/// Every input quad is evaluated in both directions, including reciprocal
+/// quads if present; this function does not select a tails-only protocol.
 pub fn evaluate_temporal_link_prediction(
     model: &dyn TemporalScorer,
     test: &[QuadIds],
@@ -484,7 +490,7 @@ pub fn evaluate_temporal_link_prediction(
     if test.is_empty() {
         return Metrics::default();
     }
-    let ranks: Vec<(u32, u32)> = test
+    let ranks: Vec<(f64, f64)> = test
         .par_iter()
         .map(|q| {
             let tail_scores = model.score_all_tails(q.head, q.relation, q.time);
@@ -492,51 +498,112 @@ pub fn evaluate_temporal_link_prediction(
                 .tails
                 .get(&(q.head, q.relation, q.time))
                 .unwrap_or(&EMPTY);
-            let target = tail_scores[q.tail];
-            let mut tail_rank = 1u32;
-            for (t, &s) in tail_scores.iter().enumerate() {
-                if t != q.tail && !known_tails.contains(&t) && beats(s, target) {
-                    tail_rank += 1;
-                }
-            }
+            let tail_rank = filtered_rank(&tail_scores, q.tail, known_tails);
 
             let head_scores = model.score_all_heads(q.relation, q.tail, q.time);
             let known_heads = filter
                 .heads
                 .get(&(q.relation, q.tail, q.time))
                 .unwrap_or(&EMPTY);
-            let target = head_scores[q.head];
-            let mut head_rank = 1u32;
-            for (h, &s) in head_scores.iter().enumerate() {
-                if h != q.head && !known_heads.contains(&h) && beats(s, target) {
-                    head_rank += 1;
-                }
-            }
+            let head_rank = filtered_rank(&head_scores, q.head, known_heads);
             (tail_rank, head_rank)
         })
         .collect();
 
-    let n = (ranks.len() * 2) as f32;
-    let all: Vec<u32> = ranks.iter().flat_map(|&(t, h)| [t, h]).collect();
-    let mrr = all.iter().map(|&r| 1.0 / r as f32).sum::<f32>() / n;
-    let tail_mrr = ranks.iter().map(|&(t, _)| 1.0 / t as f32).sum::<f32>() / ranks.len() as f32;
-    let head_mrr = ranks.iter().map(|&(_, h)| 1.0 / h as f32).sum::<f32>() / ranks.len() as f32;
-    let hits = |k: u32| all.iter().filter(|&&r| r <= k).count() as f32 / n;
-    Metrics {
-        mrr,
-        head_mrr,
-        tail_mrr,
-        mean_rank: all.iter().map(|&r| r as f32).sum::<f32>() / n,
-        hits_at_1: hits(1),
-        hits_at_3: hits(3),
-        hits_at_10: hits(10),
-    }
+    let tails: Vec<f64> = ranks.iter().map(|&(t, _)| t).collect();
+    let heads: Vec<f64> = ranks.iter().map(|&(_, h)| h).collect();
+    let all: Vec<f64> = ranks.iter().flat_map(|&(t, h)| [t, h]).collect();
+    let mut metrics = compute_metrics(&all);
+    metrics.tail_mrr = mrr(&tails);
+    metrics.head_mrr = mrr(&heads);
+    metrics
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn constant_scores_have_realistic_ranks() {
+        let model = TComplEx::from_vecs(
+            vec![vec![0.0, 0.0]; 3],
+            vec![vec![0.0, 0.0]],
+            vec![vec![0.0, 0.0]],
+            1,
+        );
+        let test = [QuadIds::new(0, 0, 1, 0)];
+        let m = evaluate_temporal_link_prediction(
+            &model,
+            &test,
+            &TemporalFilterIndex::from_quads(&test),
+        );
+        // Target positions 1, 2 and 3 have mean 2; reciprocal of that
+        // midrank is 1/2 (not the mean of reciprocal random positions).
+        assert_eq!(m.mean_rank, 2.0);
+        assert_eq!(m.mrr, 0.5);
+        assert_eq!(m.hits_at_1, 0.0);
+    }
+
+    struct TiedScores {
+        nan_target: bool,
+    }
+    impl TemporalScorer for TiedScores {
+        fn score(&self, h: usize, _: usize, t: usize, _: usize) -> f32 {
+            if h == 0 && t == 0 && self.nan_target {
+                return f32::NAN;
+            }
+            // Target 0, better entity 1, tied entities 2/3, worse entity 4.
+            let scores = [1.0, 0.0, 1.0, 1.0, 2.0];
+            scores[h] + scores[t]
+        }
+        fn num_entities(&self) -> usize {
+            5
+        }
+        fn num_relations(&self) -> usize {
+            1
+        }
+        fn num_timestamps(&self) -> usize {
+            2
+        }
+    }
+
+    #[test]
+    fn partial_ties_filter_only_at_the_query_timestamp() {
+        let test = [QuadIds::new(0, 0, 0, 0)];
+        let known = [
+            test[0],
+            QuadIds::new(0, 0, 2, 0),
+            QuadIds::new(2, 0, 0, 0),
+            QuadIds::new(0, 0, 3, 1),
+            QuadIds::new(3, 0, 0, 1),
+        ];
+        let m = evaluate_temporal_link_prediction(
+            &TiedScores { nan_target: false },
+            &test,
+            &TemporalFilterIndex::from_quads(&known),
+        );
+        // Same-time entity 2 is removed. Entity 3 remains: the target can
+        // occupy positions 2 or 3, hence rank 2.5 in both directions.
+        assert_eq!(m.mean_rank, 2.5);
+        assert_eq!(m.head_mrr, 0.4);
+        assert_eq!(m.tail_mrr, 0.4);
+        assert_eq!(m.hits_at_1, 0.0);
+        assert_eq!(m.hits_at_3, 1.0);
+    }
+
+    #[test]
+    fn nan_target_still_ranks_behind_finite_competitors() {
+        let test = [QuadIds::new(0, 0, 0, 0)];
+        let m = evaluate_temporal_link_prediction(
+            &TiedScores { nan_target: true },
+            &test,
+            &TemporalFilterIndex::from_quads(&test),
+        );
+        assert_eq!(m.mean_rank, 5.0);
+        assert_eq!(m.mrr, 0.2);
+        assert_eq!(m.hits_at_1, 0.0);
+    }
 
     #[test]
     fn tcomplex_score_matches_hand_computation() {

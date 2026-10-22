@@ -19,6 +19,13 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Temporal link-prediction evaluation now uses realistic midranks for ties,
+  matching static evaluation while preserving timestamp-aware filtering.
+- Sampled evaluation documentation now describes candidate-subset metrics
+  and their sampling/filtering behavior without claiming unbiased full ranks.
+
 ## [0.8.0] - 2026-07-08
 
 ### Added
