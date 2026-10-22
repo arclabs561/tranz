@@ -605,7 +605,8 @@ fn cmd_train_temporal(args: &[String]) {
     use tranz::burn_train::BurnTrainConfig;
     use tranz::io::write_w2v_tsv;
     use tranz::temporal::{
-        evaluate_temporal_link_prediction, load_temporal_dataset, TemporalFilterIndex,
+        evaluate_temporal_link_prediction, evaluate_temporal_link_prediction_reciprocal,
+        load_temporal_dataset, TemporalFilterIndex,
     };
 
     #[cfg(feature = "burn-wgpu")]
@@ -690,6 +691,7 @@ fn cmd_train_temporal(args: &[String]) {
         eprintln!("Failed: {e}");
         std::process::exit(1);
     });
+    let original_num_relations = ds.num_relations();
     if reciprocals {
         eprintln!("Adding reciprocal relations");
         ds.add_reciprocals();
@@ -762,7 +764,17 @@ fn cmd_train_temporal(args: &[String]) {
         };
         eprintln!("Evaluating on {eval_split} set ({} quads)...", split.len());
         let filter = TemporalFilterIndex::from_quads(&ds.all_quads());
-        let m = evaluate_temporal_link_prediction(&result.to_scorer(), split, &filter);
+        let scorer = result.to_scorer();
+        let m = if reciprocals {
+            evaluate_temporal_link_prediction_reciprocal(
+                &scorer,
+                split,
+                &filter,
+                original_num_relations,
+            )
+        } else {
+            evaluate_temporal_link_prediction(&scorer, split, &filter)
+        };
         println!("MRR:      {:.4}", m.mrr);
         println!("  head:   {:.4}", m.head_mrr);
         println!("  tail:   {:.4}", m.tail_mrr);

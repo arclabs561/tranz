@@ -19,6 +19,14 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+### Added
+
+- `evaluate_temporal_link_prediction_reciprocal` evaluates each augmented quad
+  once as a tail query, with timestamp-aware filtering and realistic ties.
+  `train-temporal --reciprocals --eval` uses this protocol and reports original
+  and inverse queries as tail and head metrics, respectively. The existing
+  temporal evaluator and nonreciprocal CLI path still score both directions.
+
 ### Fixed
 
 - Temporal link-prediction evaluation now uses realistic midranks for ties,
