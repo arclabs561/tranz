@@ -8,6 +8,49 @@ pub use lattix::kge::{
     load_dataset, load_triples, Dataset, FilterIndex, InternedDataset, Triple, TripleIds, Vocab,
 };
 
+/// Intern one distinct inverse display name per existing relation.
+///
+/// The returned count is the number of original relations. New IDs are
+/// therefore exactly `count + original_id`, even when an input relation
+/// already uses the conventional `{name}_inv` spelling.
+pub(crate) fn intern_inverse_relation_names(relations: &mut Vocab) -> usize {
+    let n_relations = relations.len();
+    let original_names: Vec<String> = (0..n_relations)
+        .map(|id| {
+            relations
+                .get(id)
+                .expect("relation ID must exist in its vocabulary")
+                .to_owned()
+        })
+        .collect();
+
+    for (original_id, name) in original_names.into_iter().enumerate() {
+        let base = format!("{name}_inv");
+        let inverse_name = if relations.id(&base).is_none() {
+            base
+        } else {
+            let mut suffix = 2usize;
+            loop {
+                let candidate = format!("{base}_{suffix}");
+                if relations.id(&candidate).is_none() {
+                    break candidate;
+                }
+                suffix = suffix
+                    .checked_add(1)
+                    .expect("inverse relation name suffix overflowed usize");
+            }
+        };
+        let inverse_id = relations.intern(inverse_name);
+        assert_eq!(
+            inverse_id,
+            n_relations + original_id,
+            "unused inverse relation name must receive its fixed-offset ID"
+        );
+    }
+
+    n_relations
+}
+
 /// Extension methods for [`InternedDataset`] specific to tranz.
 pub trait InternedDatasetExt {
     /// Add reciprocal (inverse) relations.
@@ -15,6 +58,8 @@ pub trait InternedDatasetExt {
     /// For each original relation `r` with ID `i`, creates a new relation
     /// `r_inv` with ID `num_relations + i`. For each triple `(h, r, t)`,
     /// adds `(t, r_inv, h)` to the same split.
+    /// If that display name is already in use, the first unused suffix
+    /// (`r_inv_2`, `r_inv_3`, and so on) is used instead.
     ///
     /// This consistently improves all models (Ali et al., 2022 / PyKEEN).
     fn add_reciprocals(&mut self);
@@ -22,13 +67,7 @@ pub trait InternedDatasetExt {
 
 impl InternedDatasetExt for InternedDataset {
     fn add_reciprocals(&mut self) {
-        let n_rel = self.relations.len();
-
-        // Add inverse relation names.
-        for i in 0..n_rel {
-            let name = format!("{}_inv", self.relations.get(i).unwrap());
-            self.relations.intern(name);
-        }
+        let n_rel = intern_inverse_relation_names(&mut self.relations);
 
         // Add reciprocal triples to each split.
         fn augment(triples: &mut Vec<TripleIds>, n_rel: usize) {
@@ -225,5 +264,57 @@ mod tests {
         assert_eq!(interned.relations.get(2), Some("r1_inv"));
         assert_eq!(interned.relations.get(3), Some("r2_inv"));
         assert_eq!(interned.train.len(), 4);
+    }
+
+    fn assert_reciprocal_names(original_names: &[&str], inverse_names: &[&str]) {
+        assert_eq!(original_names.len(), inverse_names.len());
+        let train: Vec<_> = original_names
+            .iter()
+            .enumerate()
+            .map(|(i, &relation)| Triple::new(format!("head-{i}"), relation, format!("tail-{i}")))
+            .collect();
+        let mut interned = Dataset::new(train, Vec::new(), Vec::new()).into_interned();
+        let n_rel = original_names.len();
+
+        for (id, &name) in original_names.iter().enumerate() {
+            assert_eq!(interned.relations.get(id), Some(name));
+            assert_eq!(interned.relations.id(name), Some(id));
+        }
+
+        interned.add_reciprocals();
+
+        assert_eq!(interned.num_relations(), n_rel * 2);
+        assert_eq!(interned.train.len(), n_rel * 2);
+        for (i, &inverse_name) in inverse_names.iter().enumerate() {
+            assert_eq!(interned.relations.get(n_rel + i), Some(inverse_name));
+            assert_eq!(interned.relations.id(inverse_name), Some(n_rel + i));
+            let original = interned.train[i];
+            let inverse = interned.train[n_rel + i];
+            assert_eq!(inverse.head, original.tail);
+            assert_eq!(inverse.relation, n_rel + i);
+            assert_eq!(inverse.tail, original.head);
+            assert!(inverse.relation < interned.num_relations());
+        }
+    }
+
+    #[test]
+    fn reciprocal_names_skip_direct_collision() {
+        assert_reciprocal_names(&["r", "r_inv"], &["r_inv_2", "r_inv_inv"]);
+    }
+
+    #[test]
+    fn reciprocal_names_skip_chained_collisions() {
+        assert_reciprocal_names(
+            &["r", "r_inv", "r_inv_inv"],
+            &["r_inv_2", "r_inv_inv_2", "r_inv_inv_inv"],
+        );
+    }
+
+    #[test]
+    fn reciprocal_names_skip_numeric_suffix_collisions() {
+        assert_reciprocal_names(
+            &["r", "r_inv", "r_inv_2", "r_inv_3"],
+            &["r_inv_4", "r_inv_inv", "r_inv_2_inv", "r_inv_3_inv"],
+        );
     }
 }

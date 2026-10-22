@@ -91,12 +91,10 @@ impl TemporalDataset {
     /// Add reciprocal relations: for each relation `r` with id `i`, a new
     /// `r_inv` with id `num_relations + i`, and for each quad
     /// `(h, r, t, τ)` the quad `(t, r_inv, h, τ)` in the same split.
+    /// If that display name is already in use, the first unused suffix
+    /// (`r_inv_2`, `r_inv_3`, and so on) is used instead.
     pub fn add_reciprocals(&mut self) {
-        let n_rel = self.relations.len();
-        for i in 0..n_rel {
-            let name = format!("{}_inv", self.relations.get(i).unwrap());
-            self.relations.intern(name);
-        }
+        let n_rel = crate::dataset::intern_inverse_relation_names(&mut self.relations);
         fn augment(quads: &mut Vec<QuadIds>, n_rel: usize) {
             let originals: Vec<_> = quads.clone();
             quads.reserve(originals.len());
@@ -877,6 +875,59 @@ mod tests {
         assert_eq!(ds.num_relations(), 2);
         assert_eq!(ds.relations.get(1), Some("r_inv"));
         assert_eq!(ds.train[1], QuadIds::new(1, 1, 0, 0));
+    }
+
+    fn assert_reciprocal_names(original_names: &[&str], inverse_names: &[&str]) {
+        assert_eq!(original_names.len(), inverse_names.len());
+        let mut ds = TemporalDataset {
+            times: vec!["2014-01-01".to_string()],
+            ..TemporalDataset::default()
+        };
+        for (i, &name) in original_names.iter().enumerate() {
+            ds.entities.intern(format!("head-{i}"));
+            ds.entities.intern(format!("tail-{i}"));
+            assert_eq!(ds.relations.intern(name.to_string()), i);
+            ds.train.push(QuadIds::new(2 * i, i, 2 * i + 1, 0));
+        }
+        let n_rel = original_names.len();
+
+        ds.add_reciprocals();
+
+        assert_eq!(ds.num_relations(), n_rel * 2);
+        assert_eq!(ds.train.len(), n_rel * 2);
+        for i in 0..n_rel {
+            assert_eq!(ds.relations.get(i), Some(original_names[i]));
+            assert_eq!(ds.relations.id(original_names[i]), Some(i));
+            assert_eq!(ds.relations.get(n_rel + i), Some(inverse_names[i]));
+            assert_eq!(ds.relations.id(inverse_names[i]), Some(n_rel + i));
+            let inverse = ds.train[n_rel + i];
+            assert_eq!(inverse.head, 2 * i + 1);
+            assert_eq!(inverse.relation, n_rel + i);
+            assert_eq!(inverse.tail, 2 * i);
+            assert_eq!(inverse.time, 0);
+            assert!(inverse.relation < ds.num_relations());
+        }
+    }
+
+    #[test]
+    fn reciprocal_names_skip_direct_collision() {
+        assert_reciprocal_names(&["r", "r_inv"], &["r_inv_2", "r_inv_inv"]);
+    }
+
+    #[test]
+    fn reciprocal_names_skip_chained_collisions() {
+        assert_reciprocal_names(
+            &["r", "r_inv", "r_inv_inv"],
+            &["r_inv_2", "r_inv_inv_2", "r_inv_inv_inv"],
+        );
+    }
+
+    #[test]
+    fn reciprocal_names_skip_numeric_suffix_collisions() {
+        assert_reciprocal_names(
+            &["r", "r_inv", "r_inv_2", "r_inv_3"],
+            &["r_inv_4", "r_inv_inv", "r_inv_2_inv", "r_inv_3_inv"],
+        );
     }
 
     /// A scorer whose planted quad is best exactly at its own timestamp:
