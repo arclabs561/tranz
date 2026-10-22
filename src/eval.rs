@@ -74,7 +74,11 @@ impl RankCount {
 
 /// Realistic filtered rank of `target` within `scores`, skipping the target
 /// itself and every id in `known`.
-fn filtered_rank(scores: &[f32], target: usize, known: &std::collections::HashSet<usize>) -> f64 {
+pub(crate) fn filtered_rank(
+    scores: &[f32],
+    target: usize,
+    known: &std::collections::HashSet<usize>,
+) -> f64 {
     let target_score = scores[target];
     let mut count = RankCount::default();
     for (id, &score) in scores.iter().enumerate() {
@@ -274,7 +278,7 @@ pub fn evaluate_link_prediction_reciprocal(
     }
 }
 
-fn compute_metrics(ranks: &[f64]) -> Metrics {
+pub(crate) fn compute_metrics(ranks: &[f64]) -> Metrics {
     if ranks.is_empty() {
         return Metrics::default();
     }
@@ -293,7 +297,7 @@ fn compute_metrics(ranks: &[f64]) -> Metrics {
     }
 }
 
-fn mrr(ranks: &[f64]) -> f32 {
+pub(crate) fn mrr(ranks: &[f64]) -> f32 {
     if ranks.is_empty() {
         return 0.0;
     }
@@ -303,16 +307,17 @@ fn mrr(ranks: &[f64]) -> f32 {
 
 /// Fast approximate evaluation using random negative sampling.
 ///
-/// Instead of scoring all `num_entities` candidates per test triple, samples
-/// `num_candidates` random negatives plus the correct answer. Ranks are
-/// computed within this smaller candidate set.
+/// For each head and tail query, draws `min(num_candidates, num_entities)`
+/// distinct entity IDs uniformly without replacement from all entity IDs.
+/// The target and other known-true completions are then removed from the draw;
+/// the target is scored separately, so fewer than `num_candidates` eligible
+/// negatives may remain. Uses realistic midranks within that candidate subset.
 ///
-/// Provides an unbiased estimate of ranking metrics when `num_candidates` is
-/// large enough (500-1000 is typical). Runs `num_entities / num_candidates`
-/// times faster than exact evaluation.
-///
-/// Based on Cornell et al. (2024), "Are We Wasting Time? A Fast, Accurate
-/// Performance Evaluation Framework for Knowledge Graph Link Predictors."
+/// These are **subset-ranking metrics**, not unbiased estimates of full-entity
+/// MRR or Hits@k. A smaller candidate set can inflate metrics and change model
+/// comparisons. Sampling all entities recovers the full filtered protocol;
+/// otherwise report the candidate count and do not compare directly with
+/// full-ranking benchmarks. Sampling is random on each call.
 pub fn evaluate_link_prediction_sampled(
     model: &(dyn Scorer + Sync),
     test_triples: &[TripleIds],
@@ -595,6 +600,20 @@ mod tests {
             r0.mrr,
             r1.mrr
         );
+    }
+
+    #[test]
+    fn sampled_subset_mrr_is_not_full_ranking_mrr() {
+        let model = crate::DistMult::from_vecs(vec![vec![0.0]; 1000], vec![vec![0.0]], 1);
+        let test = [tid(0, 0, 1)];
+        let filter = make_filter(&test);
+        let full = evaluate_link_prediction(&model, &test, &filter, 1000);
+        let sampled = evaluate_link_prediction_sampled(&model, &test, &filter, 1000, 500);
+        assert!((full.mrr - 2.0 / 1001.0).abs() < 1e-7);
+        // For every RNG outcome, at most 500 ties enter either ranking:
+        // rank <= 251. Thus these subset metrics cannot be unbiased full MRR.
+        assert!(sampled.mrr >= 1.0 / 251.0);
+        assert!(sampled.mrr > full.mrr);
     }
 
     #[test]
