@@ -75,7 +75,7 @@ required-features = ["burn-wgpu"]
 proptest = "1.5"
 tempfile = "3"
 # Serving-layer demo (examples/wn18rr_vicinity): index trained point embeddings.
-vicinity = "0.10"
+vicinity = "0.11"
 
 [lints.rust]
 missing_docs = "warn"
