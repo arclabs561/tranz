@@ -11,7 +11,7 @@ device class).
 
 ## Training (Burn backend)
 
-### `wn18rr_kge_burn` — do the four Burn KGE models actually learn on real data?
+### `wn18rr_kge_burn`: do the four Burn KGE models actually learn on real data?
 
 Trains TransE, RotatE, ComplEx, and DistMult on full WN18RR via `train_kge` and
 reports filtered MRR/Hits.
@@ -32,7 +32,7 @@ RotatE       57.1     9.596 ->   4.774        0.5532   0.6307
 MRR here is sampled-eval (200 candidates per test triple); it reads higher than
 full-entity-ranking MRR, so use it for relative comparison, not as a benchmark.
 
-### `wn18rr_vicinity` — can trained point embeddings serve nearest-neighbour queries?
+### `wn18rr_vicinity`: can trained point embeddings serve nearest-neighbour queries?
 
 Trains DistMult, then indexes the entity vectors in a [vicinity](https://crates.io/crates/vicinity)
 HNSW and runs cosine nearest-neighbour queries. (tranz produces *point*
@@ -48,7 +48,7 @@ nearest entities by cosine similarity (id: [neighbours]):
    1000: [222(0.695), 28193(0.671), 16838(0.609), 17370(0.590), 8282(0.575)]
 ```
 
-### `bench_wgpu` — how much faster is Metal than CPU?
+### `bench_wgpu`: how much faster is Metal than CPU?
 
 Times a Burn training epoch on wgpu (Metal) vs ndarray (CPU).
 

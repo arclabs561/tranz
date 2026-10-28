@@ -14,11 +14,12 @@ includes dataset loading, filtered link-prediction evaluation, embedding export,
 and Burn-backed CPU/GPU training.
 
 Install with `cargo install tranz --features burn-ndarray` (CPU) or
-`--features burn-wgpu` (GPU/Metal). Training uses Burn's 1-N (1vsAll)
+`--features "burn-ndarray,burn-wgpu"` (GPU/Metal). The CLI requires
+`burn-ndarray` even when using WGPU. Training uses Burn's 1-N (1vsAll)
 cross-entropy with AdamW.
 
 ```sh
-# Train (ComplEx is the strongest recipe with label smoothing + reciprocals)
+# Train ComplEx with label smoothing and reciprocals
 tranz train --data data/WN18RR/ --model complex --dim 200 \
     --label-smoothing 0.1 --reciprocals \
     --epochs 100 --lr 0.001 --output embeddings/ --eval
@@ -27,10 +28,13 @@ tranz train --data data/WN18RR/ --model complex --dim 200 \
 tranz train --triples my_graph.tsv --model transe --dim 200 \
     --epochs 500 --output embeddings/ --eval
 
-# Predict from saved embeddings
-tranz predict --embeddings embeddings/ --model distmult \
+# Predict from the TransE embeddings saved by the preceding command
+tranz predict --embeddings embeddings/ --model transe \
     --head "aspirin" --relation "treats" --k 10
 ```
+
+Use entity and relation names from your dataset. The prediction model must match
+the training model; use `--model complex` for the first training command's output.
 
 ## Benchmark: WN18RR
 
