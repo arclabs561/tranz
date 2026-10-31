@@ -102,7 +102,8 @@ let interned = ds.into_interned();
 
 ### Embedding export
 
-`tranz train` writes `entities.tsv`, `relations.tsv`, and `manifest.json`.
+`tranz train` writes `entities.tsv`/`relations.tsv`, or `entities.bin` +
+`entities.vocab.tsv` when binary export is selected, plus `manifest.json`.
 The manifest records model family, training config, split sizes, SHA-256
 digests, byte sizes, and evaluation metrics when `--eval` is used. With the
 `artifact-manifest` feature, `load_embedding_manifest` and
@@ -122,6 +123,14 @@ verify_embedding_manifest("output/".as_ref(), &manifest).unwrap();
 // Flat f32 matrix for FAISS/Qdrant
 let flat: Vec<f32> = flatten_matrix(&vecs);
 ```
+
+### Ranking and non-finite scores
+
+Scores rank ascending (lower is better for distance models, and the
+score-based models negate their output to match). A non-finite score is
+never treated as a win: `NaN` and `±inf` targets rank last, a `NaN`
+competitor never beats anyone, and the sign bit of a `NaN` is made
+canonical before comparison so `top_k` cannot promote it.
 
 ### Multi-hop query answering
 
