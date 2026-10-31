@@ -234,7 +234,8 @@ fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
         .init::<B, BurnComplEx<B>>();
 
     let n_triples = train_triples.len();
-    let batch_size = config.batch_size.min(n_triples);
+    // A zero batch size would step the batch loop by zero.
+    let batch_size = config.batch_size.min(n_triples).max(1);
     let eps = config.label_smoothing;
     let mut losses = Vec::with_capacity(config.epochs);
 
@@ -767,6 +768,23 @@ mod tests {
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let model = result.to_complex();
         assert_eq!(model.num_entities(), 3);
+    }
+
+    /// Bug hunt repro: `batch_size = 0` stepped the batch loop by zero, so
+    /// `train_complex` panicked inside burn-ndarray instead of training.
+    #[test]
+    #[cfg(feature = "burn-ndarray")]
+    fn burn_complex_batch_size_zero_still_trains() {
+        let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0)];
+        let config = BurnTrainConfig {
+            dim: 4,
+            epochs: 2,
+            batch_size: 0,
+            ..BurnTrainConfig::default()
+        };
+        let result = train_complex::<TestBackend>(&triples, 3, 2, &config, &test_device());
+        assert_eq!(result.losses.len(), 2);
+        assert!(result.losses.iter().all(|loss| loss.is_finite()));
     }
 
     #[test]
