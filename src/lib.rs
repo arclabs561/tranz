@@ -701,8 +701,17 @@ impl ComplEx {
 
 impl Scorer for ComplEx {
     /// Returns `-score_triple()` so that lower = more likely.
+    ///
+    /// Negating a `NaN` flips its sign bit, and `total_cmp` orders a negative
+    /// `NaN` below every real score, so it would rank first. The canonical
+    /// positive `NaN` sorts last instead.
     fn score(&self, head: usize, relation: usize, tail: usize) -> f32 {
-        -self.score_triple(head, relation, tail)
+        let score = self.score_triple(head, relation, tail);
+        if score.is_nan() {
+            f32::NAN
+        } else {
+            -score
+        }
     }
 
     fn num_entities(&self) -> usize {
@@ -863,8 +872,17 @@ impl DistMult {
 
 impl Scorer for DistMult {
     /// Returns `-score_triple()` so that lower = more likely.
+    ///
+    /// Negating a `NaN` flips its sign bit, and `total_cmp` orders a negative
+    /// `NaN` below every real score, so it would rank first. The canonical
+    /// positive `NaN` sorts last instead.
     fn score(&self, head: usize, relation: usize, tail: usize) -> f32 {
-        -self.score_triple(head, relation, tail)
+        let score = self.score_triple(head, relation, tail);
+        if score.is_nan() {
+            f32::NAN
+        } else {
+            -score
+        }
     }
 
     fn num_entities(&self) -> usize {
@@ -1430,5 +1448,38 @@ mod tests {
         for w in top.windows(2) {
             assert!(w[0].1 <= w[1].1);
         }
+    }
+}
+
+#[cfg(test)]
+mod bughunt_nan_order {
+    use super::*;
+
+    // Bug hunt repro: `-NaN` flips the sign bit, and `total_cmp` orders a
+    // negative NaN below every real score, so a NaN entity ranked first.
+    #[test]
+    fn a_nan_entity_does_not_rank_first() {
+        let dim = 2;
+        let nan_entity = vec![f32::NAN; dim * 2];
+        let model = ComplEx::from_vecs(
+            vec![nan_entity, vec![0.1; dim * 2]],
+            vec![vec![0.1; dim * 2]],
+            dim,
+        );
+        let nan_score = model.score(0, 0, 0);
+        assert!(nan_score.is_nan());
+        assert!(
+            !nan_score.is_sign_negative(),
+            "negating the score produced a negative NaN, which sorts first"
+        );
+
+        let distmult = DistMult::from_vecs(
+            vec![vec![f32::NAN; dim], vec![0.1; dim]],
+            vec![vec![0.1; dim]],
+            dim,
+        );
+        let score = distmult.score(0, 0, 0);
+        assert!(score.is_nan());
+        assert!(!score.is_sign_negative());
     }
 }
