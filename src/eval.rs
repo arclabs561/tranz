@@ -42,12 +42,17 @@ use crate::Scorer;
 
 /// True when `competitor` strictly outranks `target` (lower score = better).
 ///
-/// Non-finite scores are handled defensively so a broken/`NaN` model cannot
-/// silently inflate MRR: a `NaN` competitor never beats anyone, and a `NaN`
-/// target ranks worst (every finite competitor beats it) instead of slipping
-/// to rank 1 because `NaN < x` is always false.
+/// Non-finite scores are handled defensively so a broken model cannot silently
+/// inflate MRR. A non-finite target score is not evaluable and ranks last: a
+/// `NaN` target would otherwise slip to rank 1 because `NaN < x` is false, and
+/// an all-`+inf` model would report MRR 1.0 because no competitor is ever
+/// strictly below infinity. A `NaN` competitor never wins. A `-inf` competitor
+/// genuinely outranks any finite target.
 pub(crate) fn beats(competitor: f32, target: f32) -> bool {
-    competitor.is_finite() && (target.is_nan() || competitor < target)
+    if !target.is_finite() {
+        return true;
+    }
+    !competitor.is_nan() && competitor < target
 }
 
 /// Running count for one realistic filtered rank.
@@ -684,5 +689,37 @@ mod tests {
             (metrics.hits_at_1 - 0.0).abs() < 1e-6,
             "H@1 must be 0 for a NaN target"
         );
+    }
+
+    /// Bug hunt repro: a model that scores every triple `+inf` reported MRR 1.0,
+    /// because no competitor is ever strictly below infinity.
+    #[test]
+    fn all_infinite_scores_do_not_give_perfect_mrr() {
+        struct AllInfinite;
+        impl Scorer for AllInfinite {
+            fn score(&self, _h: usize, _r: usize, _t: usize) -> f32 {
+                f32::INFINITY
+            }
+            fn num_entities(&self) -> usize {
+                3
+            }
+        }
+        let test = vec![tid(0, 0, 1)];
+        let filter = make_filter(&test);
+        let metrics = evaluate_link_prediction(&AllInfinite, &test, &filter, 3);
+        assert!(
+            metrics.mrr < 0.5,
+            "an all-+inf model must not score well: MRR={} H@1={}",
+            metrics.mrr,
+            metrics.hits_at_1
+        );
+    }
+
+    #[test]
+    fn a_negative_infinite_competitor_outranks_a_finite_target() {
+        assert!(beats(f32::NEG_INFINITY, 1.0));
+        assert!(!beats(f32::NAN, 1.0));
+        assert!(beats(1.0, f32::INFINITY));
+        assert!(beats(1.0, f32::NAN));
     }
 }
