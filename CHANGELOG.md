@@ -19,6 +19,8 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-01
+
 ### Added
 
 - `evaluate_temporal_link_prediction_reciprocal` evaluates each augmented quad
