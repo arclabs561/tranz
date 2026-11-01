@@ -19,6 +19,8 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-01
+
 ### Added
 
 - `evaluate_temporal_link_prediction_reciprocal` evaluates each augmented quad
@@ -26,6 +28,42 @@ These source changes are not assigned to a package release here.
   `train-temporal --reciprocals --eval` uses this protocol and reports original
   and inverse queries as tail and head metrics, respectively. The existing
   temporal evaluator and nonreciprocal CLI path still score both directions.
+
+### Changed
+
+- Burn 0.20 -> 0.22, and the CPU backend from `ndarray` to `flex`. Backends
+  are selected through the `burn` facade's features now, so `burn-ndarray` and
+  `burn-wgpu` are no longer direct dependencies; `burn = "0.22"` plus
+  `burn/flex` or `burn/wgpu` replaces them. The CPU feature is renamed
+  `burn-ndarray` -> `burn-flex`, a breaking change for feature selection:
+  build with `--features burn-flex`, or `--features "burn-flex,burn-wgpu"` for
+  GPU/Metal.
+- Burn 0.22 removed the backend type parameter. `train_complex`,
+  `train_kge` and `train_tcomplex` (and their `_seeded` variants) no longer
+  take a `B: AutodiffBackend` parameter, and `BurnComplEx`, `BurnKge` and
+  `BurnTComplEx` are no longer generic over a backend. The device argument is
+  now `&burn::tensor::Device`, chosen at runtime (`Device::flex()`,
+  `Device::wgpu(..)`, `Device::default()`); the trainers enable autodiff on it
+  themselves. Seeding is `device.seed(seed)` rather than a backend associated
+  function.
+- The minimum supported Rust version is 1.95, Burn 0.22.1's MSRV.
+
+### Burn record (checkpoint) migration
+
+Nothing in tranz persists a Burn record, so no checkpoint held by a tranz user
+is affected by Burn 0.22's move from the MessagePack record format to
+burnpack. Training output is plain vectors: `train*` returns
+`Vec<Vec<f32>>`, and the CLI writes TSV/bin embeddings, `vocab.txt` and
+`manifest.json`, all unchanged. The Burn module structs are per-run internals
+with private fields and no persistence path, and the crate carries no recorder
+code to delete.
+
+A checkpoint you made yourself *with Burn 0.20* is a different matter: a
+`.mpk` file written through `NamedMpkFileRecorder` (or any 0.20 record) cannot
+be read by 0.22, which knows only burnpack. To keep it, export its tensors
+under Burn 0.20 with `burn-store`/`NamedMpkFileRecorder` (safetensors, or plain
+tensor data) and import those tensors under 0.22, or retrain: the seeded
+trainers make a run reproducible.
 
 ### Fixed
 

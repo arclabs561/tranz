@@ -1,13 +1,11 @@
 //! `train_kge_seeded` is reproducible. Kept in its own test binary because
-//! the ndarray backend RNG is process-wide and other tests would draw from
+//! the `burn-flex` backend RNG is process-wide and other tests would draw from
 //! it concurrently.
 
 use tranz::burn_temporal::train_tcomplex_seeded;
 use tranz::burn_train::{train_complex_seeded, train_kge_seeded, BurnModelType, BurnTrainConfig};
 use tranz::dataset::TripleIds;
 use tranz::temporal::QuadIds;
-
-type B = burn::backend::Autodiff<burn_ndarray::NdArray>;
 
 #[test]
 fn same_seed_gives_same_embeddings() {
@@ -21,9 +19,9 @@ fn same_seed_gives_same_embeddings() {
         log_interval: 0,
         ..BurnTrainConfig::default()
     };
-    let device = burn_ndarray::NdArrayDevice::Cpu;
+    let device = burn::tensor::Device::flex();
     let run = |seed| {
-        train_kge_seeded::<B>(
+        train_kge_seeded(
             &triples,
             6,
             2,
@@ -43,7 +41,7 @@ fn same_seed_gives_same_embeddings() {
     let c = run(8);
     assert_ne!(a.entity_vecs, c.entity_vecs);
 
-    // Keep every seeded call in this one test: ndarray's RNG is process-wide.
+    // Keep every seeded call in this one test: flex's RNG is process-wide.
     singleton_batches_preserve_the_batch_axis();
 }
 
@@ -77,7 +75,7 @@ fn singleton_batches_preserve_the_batch_axis() {
         QuadIds::new(1, 0, 2, 1),
         QuadIds::new(2, 0, 0, 0),
     ];
-    let device = burn_ndarray::NdArrayDevice::Cpu;
+    let device = burn::tensor::Device::flex();
     // Also cover a singleton remainder after a full batch, so reshaping must
     // use the actual batch length rather than the configured batch size.
     for batch_size in [1, 2] {
@@ -88,7 +86,7 @@ fn singleton_batches_preserve_the_batch_axis() {
             log_interval: 0,
             ..BurnTrainConfig::default()
         };
-        let legacy = train_complex_seeded::<B>(&triples, 3, 1, &config, &device, 17);
+        let legacy = train_complex_seeded(&triples, 3, 1, &config, &device, 17);
         assert_training_output(
             &legacy.entity_vecs,
             &legacy.relation_vecs,
@@ -102,7 +100,7 @@ fn singleton_batches_preserve_the_batch_axis() {
             (BurnModelType::ComplEx, 4, 4),
             (BurnModelType::DistMult, 2, 2),
         ] {
-            let result = train_kge_seeded::<B>(&triples, 3, 1, model, &config, &device, 17);
+            let result = train_kge_seeded(&triples, 3, 1, model, &config, &device, 17);
             assert_training_output(
                 &result.entity_vecs,
                 &result.relation_vecs,
@@ -111,7 +109,7 @@ fn singleton_batches_preserve_the_batch_axis() {
                 relation_width,
             );
         }
-        let temporal = train_tcomplex_seeded::<B>(&quads, 3, 1, 2, &config, 0.01, &device, 17);
+        let temporal = train_tcomplex_seeded(&quads, 3, 1, 2, &config, 0.01, &device, 17);
         assert_training_output(
             &temporal.entity_vecs,
             &temporal.relation_vecs,

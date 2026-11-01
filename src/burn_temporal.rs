@@ -7,11 +7,9 @@
 //! paper's two regularizers (weighted nuclear-3 Ω³ and the Λ₃ temporal
 //! smoothness prior; Lacroix et al., ICLR 2020, Eqs. 4-5).
 
-use burn::module::{Module, Param, ParamId};
-use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
-use burn::prelude::Backend;
-use burn::tensor::backend::AutodiffBackend;
-use burn::tensor::cast::ToElement;
+use burn::module::{Param, ParamId};
+use burn::optim::{AdamWConfig, GradientsParams};
+use burn::prelude::{Device, Module};
 use burn::tensor::{activation, Int, Tensor};
 
 use crate::burn_train::BurnTrainConfig;
@@ -19,10 +17,10 @@ use crate::temporal::{QuadIds, TComplEx};
 
 /// TComplEx model: complex entity, relation, and timestamp tables.
 #[derive(Module, Debug)]
-pub struct BurnTComplEx<B: Backend> {
-    entity: Param<Tensor<B, 2>>,
-    relation: Param<Tensor<B, 2>>,
-    time: Param<Tensor<B, 2>>,
+pub struct BurnTComplEx {
+    entity: Param<Tensor<2>>,
+    relation: Param<Tensor<2>>,
+    time: Param<Tensor<2>>,
 }
 
 /// Result of TComplEx training.
@@ -52,7 +50,7 @@ impl TComplExResult {
 }
 
 /// Split a `[rows, 2*dim]` complex tensor into `(re, im)` halves.
-fn re_im<B: Backend>(t: Tensor<B, 2>, dim: usize) -> (Tensor<B, 2>, Tensor<B, 2>) {
+fn re_im(t: Tensor<2>, dim: usize) -> (Tensor<2>, Tensor<2>) {
     let rows = t.dims()[0];
     (
         t.clone().slice([0..rows, 0..dim]),
@@ -61,11 +59,7 @@ fn re_im<B: Backend>(t: Tensor<B, 2>, dim: usize) -> (Tensor<B, 2>, Tensor<B, 2>
 }
 
 /// Componentwise complex product of `[B, 2*dim]` tensors.
-fn complex_mul<B: Backend>(
-    a: Tensor<B, 2>,
-    b: Tensor<B, 2>,
-    dim: usize,
-) -> (Tensor<B, 2>, Tensor<B, 2>) {
+fn complex_mul(a: Tensor<2>, b: Tensor<2>, dim: usize) -> (Tensor<2>, Tensor<2>) {
     let (a_re, a_im) = re_im(a, dim);
     let (b_re, b_im) = re_im(b, dim);
     (
@@ -76,13 +70,13 @@ fn complex_mul<B: Backend>(
 
 /// Score all entities as tails for `(h, r, ?, τ)`: `Re(<h, r∘w, conj(e)>)`
 /// for every entity `e`. Higher = more likely. `[B, E]`.
-fn score_1n_tails<B: Backend>(
-    model: &BurnTComplEx<B>,
+fn score_1n_tails(
+    model: &BurnTComplEx,
     dim: usize,
-    heads: &Tensor<B, 1, Int>,
-    rels: &Tensor<B, 1, Int>,
-    times: &Tensor<B, 1, Int>,
-) -> Tensor<B, 2> {
+    heads: &Tensor<1, Int>,
+    rels: &Tensor<1, Int>,
+    times: &Tensor<1, Int>,
+) -> Tensor<2> {
     let h = model.entity.val().select(0, heads.clone());
     let r = model.relation.val().select(0, rels.clone());
     let w = model.time.val().select(0, times.clone());
@@ -96,13 +90,13 @@ fn score_1n_tails<B: Backend>(
 
 /// Score all entities as heads for `(?, r, t, τ)`. With `c = (r∘w) ∘ conj(t)`,
 /// `Re(<e, r∘w, conj(t)>) = e_re · c_re − e_im · c_im`. Higher = more likely.
-fn score_1n_heads<B: Backend>(
-    model: &BurnTComplEx<B>,
+fn score_1n_heads(
+    model: &BurnTComplEx,
     dim: usize,
-    rels: &Tensor<B, 1, Int>,
-    tails: &Tensor<B, 1, Int>,
-    times: &Tensor<B, 1, Int>,
-) -> Tensor<B, 2> {
+    rels: &Tensor<1, Int>,
+    tails: &Tensor<1, Int>,
+    times: &Tensor<1, Int>,
+) -> Tensor<2> {
     let r = model.relation.val().select(0, rels.clone());
     let w = model.time.val().select(0, times.clone());
     let t = model.entity.val().select(0, tails.clone());
@@ -130,16 +124,16 @@ fn score_1n_heads<B: Backend>(
 ///   `p = 3` to match Ω³'s order: `λ_t/(|T|−1) · Σ |t_{i+1} − t_i|³`.
 ///   Timestamp ids must be in chronological order (the loader guarantees
 ///   this) or the penalty ties the wrong neighbors.
-pub fn train_tcomplex<B: AutodiffBackend>(
+pub fn train_tcomplex(
     train_quads: &[QuadIds],
     num_entities: usize,
     num_relations: usize,
     num_timestamps: usize,
     config: &BurnTrainConfig,
     time_smooth: f64,
-    device: &B::Device,
+    device: &Device,
 ) -> TComplExResult {
-    train_tcomplex_impl::<B, _>(
+    train_tcomplex_impl(
         train_quads,
         num_entities,
         num_relations,
@@ -152,26 +146,26 @@ pub fn train_tcomplex<B: AutodiffBackend>(
 }
 
 /// Like [`train_tcomplex`], but reproducible: seeds the backend RNG used for
-/// parameter initialization (`B::seed`) and the per-epoch shuffle.
+/// parameter initialization and the per-epoch shuffle.
 ///
 /// The same seed, data, config and backend give the same embeddings, as
 /// long as nothing else draws from the backend RNG concurrently (on
-/// `burn-ndarray` it is process-wide).
+/// `burn-flex` it is process-wide).
 #[allow(clippy::too_many_arguments)] // train_tcomplex's seven plus the seed or RNG
-pub fn train_tcomplex_seeded<B: AutodiffBackend>(
+pub fn train_tcomplex_seeded(
     train_quads: &[QuadIds],
     num_entities: usize,
     num_relations: usize,
     num_timestamps: usize,
     config: &BurnTrainConfig,
     time_smooth: f64,
-    device: &B::Device,
+    device: &Device,
     seed: u64,
 ) -> TComplExResult {
     use rand::SeedableRng;
-    B::seed(device, seed);
+    device.seed(seed);
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-    train_tcomplex_impl::<B, _>(
+    train_tcomplex_impl(
         train_quads,
         num_entities,
         num_relations,
@@ -184,24 +178,25 @@ pub fn train_tcomplex_seeded<B: AutodiffBackend>(
 }
 
 #[allow(clippy::too_many_arguments)] // train_tcomplex's seven plus the seed or RNG
-fn train_tcomplex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
+fn train_tcomplex_impl<R: rand::Rng + ?Sized>(
     train_quads: &[QuadIds],
     num_entities: usize,
     num_relations: usize,
     num_timestamps: usize,
     config: &BurnTrainConfig,
     time_smooth: f64,
-    device: &B::Device,
+    device: &Device,
     rng: &mut R,
 ) -> TComplExResult {
+    let device = device.clone().autodiff();
     let cols = 2 * config.dim;
     let mk = |rows: usize| {
         Param::initialized(
             ParamId::new(),
-            Tensor::<B, 2>::random(
+            Tensor::<2>::random(
                 [rows, cols],
                 burn::tensor::Distribution::Normal(0.0, config.init_scale),
-                device,
+                &device,
             )
             .require_grad(),
         )
@@ -214,7 +209,7 @@ fn train_tcomplex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
     let mut optim = AdamWConfig::new()
         .with_epsilon(1e-8)
         .with_weight_decay(0.0)
-        .init::<B, BurnTComplEx<B>>();
+        .init();
 
     let n = train_quads.len();
     let batch_size = config.batch_size.min(n).max(1);
@@ -229,7 +224,7 @@ fn train_tcomplex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
         }
         // Detached on-device loss accumulator; one sync per epoch (see
         // train_kge for why per-batch into_scalar stalls wgpu/Metal).
-        let mut epoch_loss_acc: Option<Tensor<<B as AutodiffBackend>::InnerBackend, 1>> = None;
+        let mut epoch_loss_acc: Option<Tensor<1>> = None;
         let mut n_batches = 0u32;
         let mut offset = 0;
         while offset < n {
@@ -238,12 +233,12 @@ fn train_tcomplex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
             let bs = batch_idx.len();
             offset = end;
 
-            let gather = |f: fn(&QuadIds) -> usize| -> Tensor<B, 1, Int> {
+            let gather = |f: fn(&QuadIds) -> usize| -> Tensor<1, Int> {
                 let v: Vec<i64> = batch_idx
                     .iter()
                     .map(|&i| f(&train_quads[i]) as i64)
                     .collect();
-                Tensor::from_data(burn::tensor::TensorData::new(v, [bs]), device)
+                Tensor::from_data(burn::tensor::TensorData::new(v, [bs]), &device)
             };
             let heads = gather(|q| q.head);
             let rels = gather(|q| q.relation);
@@ -285,7 +280,7 @@ fn train_tcomplex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
                 let r = current.relation.val().select(0, rels.clone());
                 let w = current.time.val().select(0, times.clone());
                 let (q_re, q_im) = complex_mul(r, w, config.dim);
-                let mod3 = |re: Tensor<B, 2>, im: Tensor<B, 2>| {
+                let mod3 = |re: Tensor<2>, im: Tensor<2>| {
                     (re.powf_scalar(2.0) + im.powf_scalar(2.0))
                         .add_scalar(1e-12)
                         .sqrt()
@@ -320,14 +315,14 @@ fn train_tcomplex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
             n_batches += 1;
         }
         let avg = match epoch_loss_acc {
-            Some(acc) => acc.into_scalar().to_f32() / n_batches.max(1) as f32,
+            Some(acc) => acc.into_scalar::<f32>() / n_batches.max(1) as f32,
             None => 0.0,
         };
         losses.push(avg);
     }
 
-    let extract = |p: &Param<Tensor<B, 2>>| -> Vec<Vec<f32>> {
-        let data: Vec<f32> = p.val().into_data().to_vec().unwrap();
+    let extract = |p: &Param<Tensor<2>>| -> Vec<Vec<f32>> {
+        let data: Vec<f32> = p.val().into_data().try_to_vec().unwrap();
         data.chunks(cols).map(<[f32]>::to_vec).collect()
     };
     TComplExResult {
@@ -344,12 +339,10 @@ mod tests {
     use super::*;
     use crate::temporal::{evaluate_temporal_link_prediction, TemporalFilterIndex, TemporalScorer};
 
-    #[cfg(feature = "burn-ndarray")]
-    type TestBackend = burn::backend::Autodiff<burn_ndarray::NdArray>;
-
-    #[cfg(feature = "burn-ndarray")]
-    fn test_device() -> <TestBackend as Backend>::Device {
-        burn_ndarray::NdArrayDevice::Cpu
+    /// CPU backend for the burn tests: `burn-flex` with autodiff enabled.
+    #[cfg(feature = "burn-flex")]
+    fn test_device() -> Device {
+        Device::flex().autodiff()
     }
 
     fn qid(h: usize, r: usize, t: usize, tau: usize) -> QuadIds {
@@ -357,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn tcomplex_smoke_and_loss_decreases() {
         let quads: Vec<_> = (0..24)
             .map(|i| qid(i % 6, i % 2, (i + 1) % 6, i % 3))
@@ -369,7 +362,7 @@ mod tests {
             lr: 0.01,
             ..BurnTrainConfig::default()
         };
-        let result = train_tcomplex::<TestBackend>(&quads, 6, 2, 3, &config, 0.01, &test_device());
+        let result = train_tcomplex(&quads, 6, 2, 3, &config, 0.01, &test_device());
         assert_eq!(result.losses.len(), 20);
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let first = result.losses[0];
@@ -384,10 +377,9 @@ mod tests {
     /// weights: energies are negated scores, so burn + cpu ≈ 0. Guards the
     /// head-role conjugation (minus on the imaginary matmul).
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_scores_match_cpu_reference() {
-        type B = burn_ndarray::NdArray;
-        let device = burn_ndarray::NdArrayDevice::Cpu;
+        let device = test_device();
         let (ne, nr, nt, dim) = (5usize, 2usize, 3usize, 4usize);
         let val = |i: usize| ((i * 37 + 11) % 19) as f32 / 19.0 - 0.5;
         let rows = |n: usize, seed: usize| -> Vec<Vec<f32>> {
@@ -396,21 +388,21 @@ mod tests {
                 .collect()
         };
         let (ent, rel, tim) = (rows(ne, 0), rows(nr, 7), rows(nt, 13));
-        let flat = |v: &Vec<Vec<f32>>| -> Tensor<B, 2> {
+        let flat = |v: &Vec<Vec<f32>>| -> Tensor<2> {
             let data: Vec<f32> = v.iter().flatten().copied().collect();
             Tensor::from_data(
                 burn::tensor::TensorData::new(data, [v.len(), dim * 2]),
                 &device,
             )
         };
-        let model = BurnTComplEx::<B> {
+        let model = BurnTComplEx {
             entity: Param::initialized(ParamId::new(), flat(&ent)),
             relation: Param::initialized(ParamId::new(), flat(&rel)),
             time: Param::initialized(ParamId::new(), flat(&tim)),
         };
         let cpu = TComplEx::from_vecs(ent, rel, tim, dim);
 
-        let idx = |v: Vec<i64>| -> Tensor<B, 1, Int> {
+        let idx = |v: Vec<i64>| -> Tensor<1, Int> {
             let n = v.len();
             Tensor::from_data(burn::tensor::TensorData::new(v, [n]), &device)
         };
@@ -421,7 +413,7 @@ mod tests {
             &idx(vec![0, 1]),
             &idx(vec![1, 2]),
         );
-        let tails: Vec<f32> = tails.into_data().to_vec().unwrap();
+        let tails: Vec<f32> = tails.into_data().try_to_vec().unwrap();
         for (b, (h, r, tau)) in [(0usize, 0usize, 1usize), (3, 1, 2)].iter().enumerate() {
             for e in 0..ne {
                 let burn_s = tails[b * ne + e];
@@ -439,7 +431,7 @@ mod tests {
             &idx(vec![2, 4]),
             &idx(vec![0, 2]),
         );
-        let heads: Vec<f32> = heads.into_data().to_vec().unwrap();
+        let heads: Vec<f32> = heads.into_data().try_to_vec().unwrap();
         for (b, (r, t, tau)) in [(0usize, 2usize, 0usize), (1, 4, 2)].iter().enumerate() {
             for e in 0..ne {
                 let burn_s = heads[b * ne + e];
@@ -456,7 +448,7 @@ mod tests {
     /// held-out quad well: relation 0 means "successor" at τ=0 but
     /// "predecessor" at τ=1, so time embeddings are load-bearing.
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn learns_time_dependent_relation() {
         let ne = 6;
         let mut quads = Vec::new();
@@ -474,7 +466,7 @@ mod tests {
             init_scale: 1e-2,
             ..BurnTrainConfig::default()
         };
-        let result = train_tcomplex::<TestBackend>(&quads, ne, 1, 2, &config, 0.0, &test_device());
+        let result = train_tcomplex(&quads, ne, 1, 2, &config, 0.0, &test_device());
         let scorer = result.to_scorer();
         let mut all = quads.clone();
         all.extend_from_slice(&test);

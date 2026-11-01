@@ -9,7 +9,7 @@
 //! prediction in the time-aware filtered setting.
 //!
 //! Training lives in `burn_temporal` (feature
-//! `burn-ndarray` or `burn-wgpu`); the CLI subcommand is
+//! `burn-flex` or `burn-wgpu`); the CLI subcommand is
 //! `tranz train-temporal`.
 
 use std::collections::{HashMap, HashSet};

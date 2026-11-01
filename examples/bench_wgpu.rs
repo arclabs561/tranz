@@ -6,7 +6,10 @@ use std::time::Instant;
 use tranz::burn_train::{train_complex, BurnTrainConfig};
 use tranz::dataset::{self, InternedDatasetExt};
 
-type B = burn::backend::Autodiff<burn_wgpu::Wgpu>;
+/// WGPU device: the best available adapter, as `WgpuDevice::default` did on 0.20.
+fn wgpu_device() -> burn::tensor::Device {
+    burn::tensor::Device::wgpu(burn::tensor::DeviceKind::default())
+}
 
 fn main() {
     let ds = dataset::load_dataset("data/WN18RR".as_ref()).unwrap();
@@ -20,7 +23,7 @@ fn main() {
         interned.train.len()
     );
 
-    let device = burn_wgpu::WgpuDevice::default();
+    let device = wgpu_device();
     eprintln!("WGPU device: {device:?}");
 
     for &dim in &[50, 100] {
@@ -34,7 +37,7 @@ fn main() {
             ..BurnTrainConfig::default()
         };
         let start = Instant::now();
-        let result = train_complex::<B>(&interned.train, n_ent, n_rel, &config, &device);
+        let result = train_complex(&interned.train, n_ent, n_rel, &config, &device);
         let elapsed = start.elapsed();
         eprintln!("\nBurn WGPU ComplEx 1-N dim={dim} (3 epochs):");
         eprintln!(

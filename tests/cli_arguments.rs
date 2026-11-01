@@ -1,6 +1,6 @@
 //! Numeric argument errors and initialized embedding exports through the real CLI.
 
-#![cfg(feature = "burn-ndarray")]
+#![cfg(feature = "burn-flex")]
 
 use std::process::{Command, Output};
 

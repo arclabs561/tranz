@@ -13,9 +13,9 @@ Dual-licensed under MIT or Apache-2.0.
 includes dataset loading, filtered link-prediction evaluation, embedding export,
 and Burn-backed CPU/GPU training.
 
-Install with `cargo install tranz --features burn-ndarray` (CPU) or
-`--features "burn-ndarray,burn-wgpu"` (GPU/Metal). The CLI requires
-`burn-ndarray` even when using WGPU. Training uses Burn's 1-N (1vsAll)
+Install with `cargo install tranz --features burn-flex` (CPU, Burn's `flex`
+backend) or `--features "burn-flex,burn-wgpu"` (GPU/Metal). The CLI requires
+`burn-flex` even when using WGPU. Training uses Burn's 1-N (1vsAll)
 cross-entropy with AdamW.
 
 ```sh
@@ -60,7 +60,7 @@ for ComplEx or DistMult.
 Reproduce (about 20 min on Metal: dim 100, 50 epochs over full WN18RR):
 
 ```sh
-cargo run --release --features "burn-ndarray,burn-wgpu" --bin tranz -- \
+cargo run --release --features "burn-flex,burn-wgpu" --bin tranz -- \
     train --data data/WN18RR/ --model complex --dim 100 \
     --label-smoothing 0.1 --reciprocals --epochs 50 --lr 0.001 --eval
 ```
@@ -191,7 +191,7 @@ Training runs on the Burn backend, selected by feature:
 
 | Feature | Backend | GPU | Best for |
 |---------|---------|-----|----------|
-| `burn-ndarray` | Burn + ndarray | -- | CPU training, all 4 models |
+| `burn-flex` | Burn + flex (pure Rust CPU) | -- | CPU training, all 4 models |
 | `burn-wgpu` | Burn + WGPU | Metal/Vulkan | macOS/GPU training, all 4 models |
 
 All four models train with 1-N (1vsAll) scoring: every entity is scored per
@@ -203,8 +203,9 @@ a seed for the initialization and shuffle RNGs, so a run can be repeated.
 ```rust,ignore
 use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
 
-type B = burn::backend::Autodiff<burn_ndarray::NdArray>;
-let device = burn_ndarray::NdArrayDevice::Cpu;
+// Burn 0.22: no backend type parameter. `Device::default()` picks an enabled
+// backend (GPU before CPU) unless `BURN_DEVICE` names one.
+let device = burn::tensor::Device::flex();
 
 let config = BurnTrainConfig {
     dim: 200,
@@ -213,7 +214,7 @@ let config = BurnTrainConfig {
     ..BurnTrainConfig::default()
 };
 
-let result = train_kge::<B>(
+let result = train_kge(
     &triples,
     num_entities,
     num_relations,

@@ -71,7 +71,7 @@ USAGE:
     tranz train [OPTIONS]
 
 Training uses the Burn backend with 1-N (1vsAll) cross-entropy and AdamW.
-Build with a backend: --features burn-ndarray (CPU) or --features burn-wgpu (GPU/Metal).
+Build with a backend: --features burn-flex (CPU) or --features burn-wgpu (GPU/Metal).
 
 TRAIN OPTIONS:
     --data <DIR>          WN18RR-format directory (train.txt, valid.txt, test.txt)
@@ -286,14 +286,6 @@ fn cmd_train(args: &[String]) {
         EmbeddingManifest, ManifestDataset, ManifestMetrics, ManifestTraining,
     };
 
-    // Backend: prefer wgpu (Metal/Vulkan) when enabled, else ndarray (CPU).
-    // The bin's required-features guarantees burn-ndarray, so `not(burn-wgpu)`
-    // always resolves to an available backend.
-    #[cfg(feature = "burn-wgpu")]
-    type TrainB = burn::backend::Autodiff<burn_wgpu::Wgpu>;
-    #[cfg(not(feature = "burn-wgpu"))]
-    type TrainB = burn::backend::Autodiff<burn_ndarray::NdArray>;
-
     let mut data_dir: Option<PathBuf> = None;
     let mut triples_file: Option<PathBuf> = None;
     let mut model_type = BurnModelType::TransE;
@@ -441,13 +433,14 @@ fn cmd_train(args: &[String]) {
     // Print full command for reproducibility.
     eprintln!("Command: tranz train {}", args.join(" "));
     eprintln!("Training {model_type:?} dim={dim} lr={lr} epochs={epochs} (Burn 1-N / AdamW)");
-    #[cfg(feature = "burn-wgpu")]
-    let device = burn_wgpu::WgpuDevice::default();
-    #[cfg(not(feature = "burn-wgpu"))]
-    let device = burn_ndarray::NdArrayDevice::Cpu;
+    // Backend: an enabled backend in priority order (GPUs before the CPU),
+    // unless `BURN_DEVICE` names one. The bin's required-features guarantees
+    // at least `burn-flex`, so a backend is always available.
+    let device = burn::tensor::Device::default();
+    eprintln!("Backend: {device:?}");
     let start = Instant::now();
 
-    let result = train_kge::<TrainB>(
+    let result = train_kge(
         &interned.train,
         interned.num_entities(),
         interned.num_relations(),
@@ -609,11 +602,6 @@ fn cmd_train_temporal(args: &[String]) {
         load_temporal_dataset, TemporalFilterIndex,
     };
 
-    #[cfg(feature = "burn-wgpu")]
-    type TrainB = burn::backend::Autodiff<burn_wgpu::Wgpu>;
-    #[cfg(not(feature = "burn-wgpu"))]
-    type TrainB = burn::backend::Autodiff<burn_ndarray::NdArray>;
-
     let mut data_dir: Option<PathBuf> = None;
     let mut dim = 200_usize;
     let mut init_scale = 1e-3_f64;
@@ -720,12 +708,12 @@ fn cmd_train_temporal(args: &[String]) {
     eprintln!(
         "Training TComplEx dim={dim} lr={lr} epochs={epochs} n3-reg={n3_reg} time-smooth={time_smooth} (Burn 1-N / AdamW)"
     );
-    #[cfg(feature = "burn-wgpu")]
-    let device = burn_wgpu::WgpuDevice::default();
-    #[cfg(not(feature = "burn-wgpu"))]
-    let device = burn_ndarray::NdArrayDevice::Cpu;
+    // Backend: an enabled backend in priority order (GPUs before the CPU),
+    // unless `BURN_DEVICE` names one.
+    let device = burn::tensor::Device::default();
+    eprintln!("Backend: {device:?}");
     let start = Instant::now();
-    let result = train_tcomplex::<TrainB>(
+    let result = train_tcomplex(
         &ds.train,
         ds.num_entities(),
         ds.num_relations(),
@@ -915,6 +903,6 @@ fn burn_backend_name() -> &'static str {
     if cfg!(feature = "burn-wgpu") {
         "burn-wgpu"
     } else {
-        "burn-ndarray"
+        "burn-flex"
     }
 }

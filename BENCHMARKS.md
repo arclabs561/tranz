@@ -6,15 +6,15 @@ Reproducible WN18RR runs for the current Burn trainer.
 
 ```sh
 # Install tranz for CPU training
-cargo install tranz --features burn-ndarray
+cargo install tranz --features burn-flex
 
 # Install tranz with GPU support
-cargo install tranz --features "burn-ndarray,burn-wgpu"
+cargo install tranz --features "burn-flex,burn-wgpu"
 
 # Or build from source with GPU support
 git clone https://github.com/arclabs561/tranz
 cd tranz
-cargo build --release --features "burn-ndarray,burn-wgpu" --bin tranz
+cargo build --release --features "burn-flex,burn-wgpu" --bin tranz
 
 # Download WN18RR
 mkdir -p data/WN18RR && cd data/WN18RR
@@ -60,7 +60,7 @@ test triple. These numbers are useful for comparing models inside one run, but
 they read higher than full-entity-ranking MRR.
 
 ```sh
-cargo run --release --features "burn-ndarray,burn-wgpu" --example wn18rr_kge_burn
+cargo run --release --features "burn-flex,burn-wgpu" --example wn18rr_kge_burn
 ```
 
 | Model | Train seconds | Loss | Sampled MRR | H@10 |
@@ -81,7 +81,7 @@ cargo run --release --features "burn-ndarray,burn-wgpu" --example wn18rr_kge_bur
 
 ## Notes
 
-- The binary uses wgpu when built with `burn-wgpu`; otherwise it uses ndarray.
+- The binary uses wgpu when built with `burn-wgpu`; otherwise it uses the `burn-flex` CPU backend.
 - CPU eval uses rayon for parallelism. Set `RAYON_NUM_THREADS` to control.
 - Reciprocal relations (`--reciprocals`) doubles the training data and
   number of relations. Test metrics are computed on the original test set

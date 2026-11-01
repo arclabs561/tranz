@@ -19,7 +19,7 @@ jobs:
         include:
           - rust: stable
             lint: true
-          - rust: "1.89"
+          - rust: "1.95"
             lint: false
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -34,10 +34,10 @@ jobs:
         if: matrix.lint
       - run: cargo clippy --all-targets -- -D warnings
         if: matrix.lint
-      - run: cargo clippy --all-targets --features "burn-ndarray,burn-wgpu,rand" -- -D warnings
+      - run: cargo clippy --all-targets --features "burn-flex,burn-wgpu,rand" -- -D warnings
         if: matrix.lint
       - run: cargo test
-      - run: cargo test --features burn-ndarray
+      - run: cargo test --features burn-flex
         if: matrix.lint
       - run: cargo doc --no-deps --all-features
         if: matrix.lint
