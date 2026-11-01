@@ -64,6 +64,10 @@ name = "wn18rr_kge_burn"
 required-features = ["burn-ndarray"]
 
 [[example]]
+name = "cpu_parity_metric"
+required-features = ["burn-ndarray"]
+
+[[example]]
 name = "wn18rr_vicinity"
 required-features = ["burn-ndarray"]
 
