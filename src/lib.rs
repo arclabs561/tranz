@@ -18,8 +18,8 @@
 //! ## Feature flags
 //!
 //! - **`rand`** (default): enables random initialization via `Model::new()`.
-//! - **`burn-ndarray`**: enables training via the `burn_train` module on the
-//!   ndarray (CPU) backend.
+//! - **`burn-flex`**: enables training via the `burn_train` module on burn's
+//!   `flex` CPU backend (pure Rust, rayon + SIMD).
 //! - **`burn-wgpu`**: training on the WGPU backend (Metal/Vulkan/WebGPU).
 
 #![warn(missing_docs)]
@@ -29,9 +29,9 @@
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDoctests;
 
-#[cfg(any(feature = "burn-ndarray", feature = "burn-wgpu"))]
+#[cfg(any(feature = "burn-flex", feature = "burn-wgpu"))]
 pub mod burn_temporal;
-#[cfg(any(feature = "burn-ndarray", feature = "burn-wgpu"))]
+#[cfg(any(feature = "burn-flex", feature = "burn-wgpu"))]
 pub mod burn_train;
 pub mod dataset;
 pub mod eval;

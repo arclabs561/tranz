@@ -5,9 +5,9 @@
 //! depends on is a literal in this file (data, config, seed), so two backends
 //! running the same binary revision produce directly comparable numbers: this
 //! is the harness used to show CPU parity when the CPU backend moved from
-//! `burn-ndarray` to `burn-flex`.
+//! `burn-ndarray` to `burn-flex` (Burn 0.20 -> 0.22).
 //!
-//! Run: `cargo run --release --features burn-ndarray --example cpu_parity_metric`
+//! Run: `cargo run --release --features burn-flex --example cpu_parity_metric`
 
 #![allow(missing_docs)]
 
@@ -27,11 +27,8 @@ const EPOCHS: usize = 300;
 /// Every fifth head row is held out for evaluation.
 const TEST_EVERY: usize = 5;
 
-/// CPU backend, selected by the crate's CPU feature.
-type B = burn::backend::Autodiff<burn_ndarray::NdArray>;
-
 fn main() {
-    let device = burn_ndarray::NdArrayDevice::Cpu;
+    let device = burn::tensor::Device::flex();
     let ds = synthetic_dataset();
     let filter = FilterIndex::from_dataset(&ds);
     let (n_ent, n_rel) = (ds.num_entities(), ds.num_relations());
@@ -53,8 +50,7 @@ fn main() {
         BurnModelType::ComplEx,
         BurnModelType::DistMult,
     ] {
-        let result =
-            train_kge_seeded::<B>(&ds.train, n_ent, n_rel, mt, &config(&ds), &device, SEED);
+        let result = train_kge_seeded(&ds.train, n_ent, n_rel, mt, &config(&ds), &device, SEED);
         let first = result.losses[0];
         let last = *result.losses.last().expect("epochs > 0");
         let metrics = tranz::eval::evaluate_link_prediction(
@@ -75,22 +71,34 @@ fn main() {
 /// Batch size: the smallest full-batch divisor of the training set at or above 16.
 fn batch_size(ds: &InternedDataset) -> usize {
     let n = ds.train.len();
-    (16..=n).find(|b| n % b == 0).unwrap_or(n)
+    (16..=n).find(|b| n.is_multiple_of(*b)).unwrap_or(n)
 }
 
 fn env(name: &str, default: f64) -> f64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 fn config(ds: &InternedDataset) -> BurnTrainConfig {
     BurnTrainConfig {
-        dim: std::env::var("DIM").ok().and_then(|v| v.parse().ok()).unwrap_or(DIM),
+        dim: std::env::var("DIM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DIM),
         init_scale: env("INIT", 1e-3),
         lr: env("LR", 0.01),
         label_smoothing: 0.1,
         n3_reg: 0.0,
-        batch_size: std::env::var("BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| batch_size(ds)),
-        epochs: std::env::var("EPOCHS").ok().and_then(|v| v.parse().ok()).unwrap_or(EPOCHS),
+        batch_size: std::env::var("BATCH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| batch_size(ds)),
+        epochs: std::env::var("EPOCHS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(EPOCHS),
         log_interval: 0,
     }
 }

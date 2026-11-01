@@ -1,30 +1,31 @@
 //! Burn-based training for KGE models.
 //!
-//! Trains all four point-embedding models on CPU (ndarray + rayon) or GPU
-//! (WGPU/Metal/Vulkan) backends via burn's backend system.
+//! Trains all four point-embedding models on CPU (`burn-flex`, pure Rust with
+//! rayon + SIMD) or GPU (WGPU/Metal/Vulkan). Burn 0.22 has no backend type
+//! parameter: tensors carry their rank in the type and their backend in the
+//! [`Device`].
 //!
-//! Enable with `burn-ndarray` (ndarray) or `burn-wgpu` (WGPU) feature.
+//! Enable with `burn-flex` (CPU) or `burn-wgpu` (WGPU).
 //!
 //! Two entry points: [`train_complex`] (ComplEx-specific, kept for the bench
-//! examples) and [`train_kge`], generic over all four models (TransE, RotatE,
+//! examples) and [`train_kge`], selected over all four models (TransE, RotatE,
 //! ComplEx, DistMult) via [`BurnModelType`] with 1-N (1vsAll) scoring.
 
 use burn::module::{Module, Param, ParamId};
-use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
+use burn::optim::{AdamWConfig, GradientsParams};
 use burn::prelude::*;
 use burn::tensor::activation;
-use burn::tensor::backend::AutodiffBackend;
 
 /// ComplEx model as a burn Module.
 ///
 /// Stores entity and relation embeddings as separate real/imaginary
 /// parameter tensors.
 #[derive(Module, Debug)]
-pub struct BurnComplEx<B: Backend> {
-    entity_re: Param<Tensor<B, 2>>,
-    entity_im: Param<Tensor<B, 2>>,
-    relation_re: Param<Tensor<B, 2>>,
-    relation_im: Param<Tensor<B, 2>>,
+pub struct BurnComplEx {
+    entity_re: Param<Tensor<2>>,
+    entity_im: Param<Tensor<2>>,
+    relation_re: Param<Tensor<2>>,
+    relation_im: Param<Tensor<2>>,
 }
 
 /// Configuration for burn-based training.
@@ -94,17 +95,17 @@ impl BurnTrainResult {
 }
 
 /// Initialize a BurnComplEx model.
-fn init_model<B: AutodiffBackend>(
+fn init_model(
     num_entities: usize,
     num_relations: usize,
     dim: usize,
     init_scale: f64,
-    device: &B::Device,
-) -> BurnComplEx<B> {
+    device: &Device,
+) -> BurnComplEx {
     let mk = |rows, cols| {
         Param::initialized(
             ParamId::new(),
-            Tensor::<B, 2>::random(
+            Tensor::<2>::random(
                 [rows, cols],
                 burn::tensor::Distribution::Normal(0.0, init_scale),
                 device,
@@ -123,11 +124,7 @@ fn init_model<B: AutodiffBackend>(
 /// Score all entities as tails for a batch of (h, r) queries.
 ///
 /// Returns `[batch, num_entities]` where higher = more likely.
-fn score_1n<B: Backend>(
-    model: &BurnComplEx<B>,
-    heads: &Tensor<B, 1, Int>,
-    rels: &Tensor<B, 1, Int>,
-) -> Tensor<B, 2> {
+fn score_1n(model: &BurnComplEx, heads: &Tensor<1, Int>, rels: &Tensor<1, Int>) -> Tensor<2> {
     let h_re = model.entity_re.val().select(0, heads.clone());
     let h_im = model.entity_im.val().select(0, heads.clone());
     let r_re = model.relation_re.val().select(0, rels.clone());
@@ -144,11 +141,7 @@ fn score_1n<B: Backend>(
 }
 
 /// Score all entities as heads for a batch of (r, t) queries.
-fn score_1n_heads<B: Backend>(
-    model: &BurnComplEx<B>,
-    rels: &Tensor<B, 1, Int>,
-    tails: &Tensor<B, 1, Int>,
-) -> Tensor<B, 2> {
+fn score_1n_heads(model: &BurnComplEx, rels: &Tensor<1, Int>, tails: &Tensor<1, Int>) -> Tensor<2> {
     let r_re = model.relation_re.val().select(0, rels.clone());
     let r_im = model.relation_im.val().select(0, rels.clone());
     let t_re = model.entity_re.val().select(0, tails.clone());
@@ -168,15 +161,16 @@ fn score_1n_heads<B: Backend>(
 
 /// Train ComplEx with 1-N scoring using burn.
 ///
-/// Returns entity/relation embeddings and per-epoch losses.
-pub fn train_complex<B: AutodiffBackend>(
+/// Returns entity/relation embeddings and per-epoch losses. `device` may be a
+/// plain backend device; the trainers enable autodiff on it themselves.
+pub fn train_complex(
     train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     config: &BurnTrainConfig,
-    device: &B::Device,
+    device: &Device,
 ) -> BurnTrainResult {
-    train_complex_impl::<B, _>(
+    train_complex_impl(
         train_triples,
         num_entities,
         num_relations,
@@ -187,23 +181,23 @@ pub fn train_complex<B: AutodiffBackend>(
 }
 
 /// Like [`train_complex`], but reproducible: seeds the backend RNG used for
-/// parameter initialization (`B::seed`) and the per-epoch shuffle.
+/// parameter initialization and the per-epoch shuffle.
 ///
 /// The same seed, data, config and backend give the same embeddings, as
 /// long as nothing else draws from the backend RNG concurrently (on
-/// `burn-ndarray` it is process-wide).
-pub fn train_complex_seeded<B: AutodiffBackend>(
+/// `burn-flex` it is process-wide).
+pub fn train_complex_seeded(
     train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     config: &BurnTrainConfig,
-    device: &B::Device,
+    device: &Device,
     seed: u64,
 ) -> BurnTrainResult {
     use rand::SeedableRng;
-    B::seed(device, seed);
+    device.seed(seed);
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-    train_complex_impl::<B, _>(
+    train_complex_impl(
         train_triples,
         num_entities,
         num_relations,
@@ -213,25 +207,26 @@ pub fn train_complex_seeded<B: AutodiffBackend>(
     )
 }
 
-fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
+fn train_complex_impl<R: rand::Rng + ?Sized>(
     train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     config: &BurnTrainConfig,
-    device: &B::Device,
+    device: &Device,
     rng: &mut R,
 ) -> BurnTrainResult {
-    let mut model = init_model::<B>(
+    let device = device.clone().autodiff();
+    let mut model = init_model(
         num_entities,
         num_relations,
         config.dim,
         config.init_scale,
-        device,
+        &device,
     );
     let mut optim = AdamWConfig::new()
         .with_epsilon(1e-8)
         .with_weight_decay(0.0)
-        .init::<B, BurnComplEx<B>>();
+        .init();
 
     let n_triples = train_triples.len();
     // A zero batch size would step the batch loop by zero.
@@ -273,17 +268,17 @@ fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
                 .map(|&i| train_triples[i].tail as i64)
                 .collect();
 
-            let heads = Tensor::<B, 1, Int>::from_data(
+            let heads = Tensor::<1, Int>::from_data(
                 burn::tensor::TensorData::new(heads_data, [actual_bs]),
-                device,
+                &device,
             );
-            let rels = Tensor::<B, 1, Int>::from_data(
+            let rels = Tensor::<1, Int>::from_data(
                 burn::tensor::TensorData::new(rels_data, [actual_bs]),
-                device,
+                &device,
             );
-            let tails = Tensor::<B, 1, Int>::from_data(
+            let tails = Tensor::<1, Int>::from_data(
                 burn::tensor::TensorData::new(tails_data.clone(), [actual_bs]),
-                device,
+                &device,
             );
 
             let current = model.clone();
@@ -326,7 +321,7 @@ fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
 
             // Extract loss value from inner (non-autodiff) tensor to avoid
             // consuming the computation graph before backward().
-            let loss_val: f32 = loss.clone().inner().into_scalar().to_f32();
+            let loss_val: f32 = loss.clone().inner().into_scalar::<f32>();
             let grads = GradientsParams::from_grads(loss.backward(), &current);
 
             if loss_val.is_finite() {
@@ -352,9 +347,9 @@ fn train_complex_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
 
     // Extract embeddings to CPU.
     let dim = config.dim;
-    let extract = |re: &Param<Tensor<B, 2>>, im: &Param<Tensor<B, 2>>| -> Vec<Vec<f32>> {
-        let re_data: Vec<f32> = re.val().into_data().to_vec().unwrap();
-        let im_data: Vec<f32> = im.val().into_data().to_vec().unwrap();
+    let extract = |re: &Param<Tensor<2>>, im: &Param<Tensor<2>>| -> Vec<Vec<f32>> {
+        let re_data: Vec<f32> = re.val().into_data().try_to_vec().unwrap();
+        let im_data: Vec<f32> = im.val().into_data().try_to_vec().unwrap();
         let n = re_data.len() / dim;
         (0..n)
             .map(|i| {
@@ -413,9 +408,9 @@ impl BurnModelType {
 
 /// Generic KGE model: entity and relation embedding tables.
 #[derive(Module, Debug)]
-pub struct BurnKge<B: Backend> {
-    entity: Param<Tensor<B, 2>>,
-    relation: Param<Tensor<B, 2>>,
+pub struct BurnKge {
+    entity: Param<Tensor<2>>,
+    relation: Param<Tensor<2>>,
 }
 
 /// Result of generic KGE training.
@@ -447,7 +442,7 @@ impl BurnKgeResult {
 }
 
 /// Split a `[rows, 2*dim]` complex tensor into `(re, im)` halves.
-fn re_im<B: Backend>(t: Tensor<B, 2>, dim: usize) -> (Tensor<B, 2>, Tensor<B, 2>) {
+fn re_im(t: Tensor<2>, dim: usize) -> (Tensor<2>, Tensor<2>) {
     let rows = t.dims()[0];
     (
         t.clone().slice([0..rows, 0..dim]),
@@ -457,7 +452,7 @@ fn re_im<B: Backend>(t: Tensor<B, 2>, dim: usize) -> (Tensor<B, 2>, Tensor<B, 2>
 
 /// `-||hr - e||^2` for every entity `e`, via the GEMM expansion of the squared
 /// distance. `hr` is `[B, d]`, `ent` is `[E, d]`; returns `[B, E]`.
-fn neg_sq_dist<B: Backend>(hr: Tensor<B, 2>, ent: Tensor<B, 2>) -> Tensor<B, 2> {
+fn neg_sq_dist(hr: Tensor<2>, ent: Tensor<2>) -> Tensor<2> {
     let hr_sq = hr.clone().powf_scalar(2.0).sum_dim(1); // [B, 1]
     let ent_sq = ent.clone().powf_scalar(2.0).sum_dim(1).transpose(); // [1, E]
     let cross = hr.matmul(ent.transpose()); // [B, E]
@@ -465,13 +460,13 @@ fn neg_sq_dist<B: Backend>(hr: Tensor<B, 2>, ent: Tensor<B, 2>) -> Tensor<B, 2> 
 }
 
 /// Score all entities as tails for `(h, r, ?)`. Higher = more likely. `[B, E]`.
-fn score_1n_kge<B: Backend>(
-    model: &BurnKge<B>,
+fn score_1n_kge(
+    model: &BurnKge,
     mt: BurnModelType,
     dim: usize,
-    heads: &Tensor<B, 1, Int>,
-    rels: &Tensor<B, 1, Int>,
-) -> Tensor<B, 2> {
+    heads: &Tensor<1, Int>,
+    rels: &Tensor<1, Int>,
+) -> Tensor<2> {
     let h = model.entity.val().select(0, heads.clone());
     let r = model.relation.val().select(0, rels.clone());
     let ent = model.entity.val();
@@ -498,13 +493,13 @@ fn score_1n_kge<B: Backend>(
 }
 
 /// Score all entities as heads for `(?, r, t)`. Higher = more likely. `[B, E]`.
-fn score_1n_heads_kge<B: Backend>(
-    model: &BurnKge<B>,
+fn score_1n_heads_kge(
+    model: &BurnKge,
     mt: BurnModelType,
     dim: usize,
-    rels: &Tensor<B, 1, Int>,
-    tails: &Tensor<B, 1, Int>,
-) -> Tensor<B, 2> {
+    rels: &Tensor<1, Int>,
+    tails: &Tensor<1, Int>,
+) -> Tensor<2> {
     let r = model.relation.val().select(0, rels.clone());
     let t = model.entity.val().select(0, tails.clone());
     let ent = model.entity.val();
@@ -534,17 +529,17 @@ fn score_1n_heads_kge<B: Backend>(
 
 /// Train any of the four KGE models with 1-N (1vsAll) scoring.
 ///
-/// Generic counterpart of [`train_complex`]; the `BurnModelType` selects the
-/// scoring function. Returns embeddings, the model family, and per-epoch loss.
-pub fn train_kge<B: AutodiffBackend>(
+/// Counterpart of [`train_complex`]; the `BurnModelType` selects the scoring
+/// function. Returns embeddings, the model family, and per-epoch loss.
+pub fn train_kge(
     train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     model_type: BurnModelType,
     config: &BurnTrainConfig,
-    device: &B::Device,
+    device: &Device,
 ) -> BurnKgeResult {
-    train_kge_impl::<B, _>(
+    train_kge_impl(
         train_triples,
         num_entities,
         num_relations,
@@ -556,24 +551,24 @@ pub fn train_kge<B: AutodiffBackend>(
 }
 
 /// Like [`train_kge`], but reproducible: seeds the backend RNG used for
-/// parameter initialization (`B::seed`) and the per-epoch shuffle.
+/// parameter initialization and the per-epoch shuffle.
 ///
 /// The same seed, data, config and backend give the same embeddings, as
 /// long as nothing else draws from the backend RNG concurrently (on
-/// `burn-ndarray` it is process-wide).
-pub fn train_kge_seeded<B: AutodiffBackend>(
+/// `burn-flex` it is process-wide).
+pub fn train_kge_seeded(
     train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     model_type: BurnModelType,
     config: &BurnTrainConfig,
-    device: &B::Device,
+    device: &Device,
     seed: u64,
 ) -> BurnKgeResult {
     use rand::SeedableRng;
-    B::seed(device, seed);
+    device.seed(seed);
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-    train_kge_impl::<B, _>(
+    train_kge_impl(
         train_triples,
         num_entities,
         num_relations,
@@ -584,24 +579,25 @@ pub fn train_kge_seeded<B: AutodiffBackend>(
     )
 }
 
-fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
+fn train_kge_impl<R: rand::Rng + ?Sized>(
     train_triples: &[crate::dataset::TripleIds],
     num_entities: usize,
     num_relations: usize,
     model_type: BurnModelType,
     config: &BurnTrainConfig,
-    device: &B::Device,
+    device: &Device,
     rng: &mut R,
 ) -> BurnKgeResult {
+    let device = device.clone().autodiff();
     let ent_dim = model_type.entity_dim(config.dim);
     let rel_dim = model_type.relation_dim(config.dim);
     let mk = |rows, cols| {
         Param::initialized(
             ParamId::new(),
-            Tensor::<B, 2>::random(
+            Tensor::<2>::random(
                 [rows, cols],
                 burn::tensor::Distribution::Normal(0.0, config.init_scale),
-                device,
+                &device,
             )
             .require_grad(),
         )
@@ -613,7 +609,7 @@ fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
     let mut optim = AdamWConfig::new()
         .with_epsilon(1e-8)
         .with_weight_decay(0.0)
-        .init::<B, BurnKge<B>>();
+        .init();
 
     let n_triples = train_triples.len();
     let batch_size = config.batch_size.min(n_triples).max(1);
@@ -629,7 +625,7 @@ fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
         // Accumulate the detached loss on-device and read it once per epoch.
         // Reading the loss every batch (into_scalar) forces a CPU<->GPU sync that
         // stalls the pipeline -- the dominant per-batch cost on wgpu/Metal.
-        let mut epoch_loss_acc: Option<Tensor<<B as AutodiffBackend>::InnerBackend, 1>> = None;
+        let mut epoch_loss_acc: Option<Tensor<1>> = None;
         let mut n_batches = 0u32;
         let mut offset = 0;
         while offset < n_triples {
@@ -651,11 +647,11 @@ fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
                 .map(|&i| train_triples[i].tail as i64)
                 .collect();
             let heads =
-                Tensor::<B, 1, Int>::from_data(burn::tensor::TensorData::new(hd, [bs]), device);
+                Tensor::<1, Int>::from_data(burn::tensor::TensorData::new(hd, [bs]), &device);
             let rels =
-                Tensor::<B, 1, Int>::from_data(burn::tensor::TensorData::new(rd, [bs]), device);
+                Tensor::<1, Int>::from_data(burn::tensor::TensorData::new(rd, [bs]), &device);
             let tails =
-                Tensor::<B, 1, Int>::from_data(burn::tensor::TensorData::new(tdv, [bs]), device);
+                Tensor::<1, Int>::from_data(burn::tensor::TensorData::new(tdv, [bs]), &device);
 
             let current = model.clone();
             let tail_scores = score_1n_kge(&current, model_type, config.dim, &heads, &rels);
@@ -688,7 +684,7 @@ fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
                 let h = current.entity.val().select(0, heads.clone());
                 let t = current.entity.val().select(0, tails.clone());
                 let r = current.relation.val().select(0, rels.clone());
-                let cube = |x: Tensor<B, 2>, complex: bool| {
+                let cube = |x: Tensor<2>, complex: bool| {
                     if complex {
                         let d = x.dims()[1] / 2;
                         let (re, im) = re_im(x, d);
@@ -716,14 +712,14 @@ fn train_kge_impl<B: AutodiffBackend, R: rand::Rng + ?Sized>(
             n_batches += 1;
         }
         let avg = match epoch_loss_acc {
-            Some(acc) => acc.into_scalar().to_f32() / n_batches.max(1) as f32,
+            Some(acc) => acc.into_scalar::<f32>() / n_batches.max(1) as f32,
             None => 0.0,
         };
         losses.push(avg);
     }
 
-    let extract = |p: &Param<Tensor<B, 2>>, cols: usize| -> Vec<Vec<f32>> {
-        let data: Vec<f32> = p.val().into_data().to_vec().unwrap();
+    let extract = |p: &Param<Tensor<2>>, cols: usize| -> Vec<Vec<f32>> {
+        let data: Vec<f32> = p.val().into_data().try_to_vec().unwrap();
         data.chunks(cols).map(<[f32]>::to_vec).collect()
     };
     BurnKgeResult {
@@ -745,16 +741,14 @@ mod tests {
         TripleIds::new(h, r, t)
     }
 
-    #[cfg(feature = "burn-ndarray")]
-    type TestBackend = burn::backend::Autodiff<burn_ndarray::NdArray>;
-
-    #[cfg(feature = "burn-ndarray")]
-    fn test_device() -> <TestBackend as Backend>::Device {
-        burn_ndarray::NdArrayDevice::Cpu
+    /// CPU backend for the burn tests: `burn-flex` with autodiff enabled.
+    #[cfg(feature = "burn-flex")]
+    fn test_device() -> Device {
+        Device::flex().autodiff()
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_complex_smoke() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0), tid(0, 1, 2)];
         let config = BurnTrainConfig {
@@ -763,7 +757,7 @@ mod tests {
             batch_size: 4,
             ..BurnTrainConfig::default()
         };
-        let result = train_complex::<TestBackend>(&triples, 3, 2, &config, &test_device());
+        let result = train_complex(&triples, 3, 2, &config, &test_device());
         assert_eq!(result.losses.len(), 10);
         assert!(result.losses.iter().all(|l| l.is_finite()));
         let model = result.to_complex();
@@ -771,9 +765,9 @@ mod tests {
     }
 
     /// Bug hunt repro: `batch_size = 0` stepped the batch loop by zero, so
-    /// `train_complex` panicked inside burn-ndarray instead of training.
+    /// `train_complex` panicked inside the CPU backend instead of training.
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_complex_batch_size_zero_still_trains() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 1, 0)];
         let config = BurnTrainConfig {
@@ -782,13 +776,13 @@ mod tests {
             batch_size: 0,
             ..BurnTrainConfig::default()
         };
-        let result = train_complex::<TestBackend>(&triples, 3, 2, &config, &test_device());
+        let result = train_complex(&triples, 3, 2, &config, &test_device());
         assert_eq!(result.losses.len(), 2);
         assert!(result.losses.iter().all(|loss| loss.is_finite()));
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_complex_loss_decreases() {
         let triples: Vec<_> = (0..20).map(|i| tid(i % 5, i % 2, (i + 1) % 5)).collect();
         let config = BurnTrainConfig {
@@ -798,7 +792,7 @@ mod tests {
             lr: 0.001,
             ..BurnTrainConfig::default()
         };
-        let result = train_complex::<TestBackend>(&triples, 5, 2, &config, &test_device());
+        let result = train_complex(&triples, 5, 2, &config, &test_device());
         let first = result.losses[0];
         let last = *result.losses.last().unwrap();
         assert!(
@@ -808,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_complex_scores_match_cpu_reference() {
         // Parity contract between the burn scoring paths and the CPU
         // reference: identical weights must produce identical scores (the
@@ -833,30 +827,29 @@ mod tests {
                 .collect();
             Param::initialized(
                 ParamId::new(),
-                Tensor::<TestBackend, 2>::from_data(
+                Tensor::<2>::from_data(
                     burn::tensor::TensorData::new(flat, [rows.len(), hi - lo]),
                     &device,
                 ),
             )
         };
-        let model = BurnComplEx::<TestBackend> {
+        let model = BurnComplEx {
             entity_re: param(&ent_rows, 0, dim),
             entity_im: param(&ent_rows, dim, dim * 2),
             relation_re: param(&rel_rows, 0, dim),
             relation_im: param(&rel_rows, dim, dim * 2),
         };
         // The generic KGE model shares the concatenated [re.., im..] layout.
-        let kge = BurnKge::<TestBackend> {
+        let kge = BurnKge {
             entity: param(&ent_rows, 0, dim * 2),
             relation: param(&rel_rows, 0, dim * 2),
         };
 
-        let scores =
-            |t: Tensor<TestBackend, 2>| -> Vec<f32> { t.into_data().to_vec::<f32>().unwrap() };
+        let scores = |t: Tensor<2>| -> Vec<f32> { t.into_data().try_to_vec::<f32>().unwrap() };
         for r in 0..nr {
             for x in 0..ne {
                 let ids = |i: usize| {
-                    Tensor::<TestBackend, 1, Int>::from_data(
+                    Tensor::<1, Int>::from_data(
                         burn::tensor::TensorData::new(vec![i as i64], [1]),
                         &device,
                     )
@@ -900,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_distmult_scores_match_cpu_reference() {
         // Exact parity between the generic KGE burn scorer (DistMult path) and
         // the CPU reference: identical weights must produce identical scores.
@@ -924,24 +917,23 @@ mod tests {
             let flat: Vec<f32> = rows.iter().flat_map(|r| r.iter().copied()).collect();
             Param::initialized(
                 ParamId::new(),
-                Tensor::<TestBackend, 2>::from_data(
+                Tensor::<2>::from_data(
                     burn::tensor::TensorData::new(flat, [rows.len(), cols]),
                     &device,
                 ),
             )
         };
-        let kge = BurnKge::<TestBackend> {
+        let kge = BurnKge {
             entity: param(&ent_rows),
             relation: param(&rel_rows),
         };
 
-        let scores =
-            |t: Tensor<TestBackend, 2>| -> Vec<f32> { t.into_data().to_vec::<f32>().unwrap() };
+        let scores = |t: Tensor<2>| -> Vec<f32> { t.into_data().try_to_vec::<f32>().unwrap() };
         let mt = BurnModelType::DistMult;
         for r in 0..nr {
             for x in 0..ne {
                 let ids = |i: usize| {
-                    Tensor::<TestBackend, 1, Int>::from_data(
+                    Tensor::<1, Int>::from_data(
                         burn::tensor::TensorData::new(vec![i as i64], [1]),
                         &device,
                     )
@@ -974,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_complex_achieves_nonzero_mrr() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)];
         let config = BurnTrainConfig {
@@ -984,7 +976,7 @@ mod tests {
             lr: 0.001,
             ..BurnTrainConfig::default()
         };
-        let result = train_complex::<TestBackend>(&triples, 5, 1, &config, &test_device());
+        let result = train_complex(&triples, 5, 1, &config, &test_device());
         let model = result.to_complex();
 
         let ds = crate::dataset::Dataset::new(
@@ -1011,7 +1003,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn kge_loss_decreases(mt: BurnModelType) {
         let triples: Vec<_> = (0..20).map(|i| tid(i % 5, i % 2, (i + 1) % 5)).collect();
         let config = BurnTrainConfig {
@@ -1021,7 +1013,7 @@ mod tests {
             lr: 0.005,
             ..BurnTrainConfig::default()
         };
-        let result = train_kge::<TestBackend>(&triples, 5, 2, mt, &config, &test_device());
+        let result = train_kge(&triples, 5, 2, mt, &config, &test_device());
         assert_eq!(result.losses.len(), 40);
         assert!(
             result.losses.iter().all(|l| l.is_finite()),
@@ -1035,25 +1027,25 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_transe_loss_decreases() {
         kge_loss_decreases(BurnModelType::TransE);
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_distmult_loss_decreases() {
         kge_loss_decreases(BurnModelType::DistMult);
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_rotate_loss_decreases() {
         kge_loss_decreases(BurnModelType::RotatE);
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_distmult_achieves_nonzero_mrr() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2), tid(2, 0, 3), tid(3, 0, 4)];
         let config = BurnTrainConfig {
@@ -1063,7 +1055,7 @@ mod tests {
             lr: 0.01,
             ..BurnTrainConfig::default()
         };
-        let result = train_kge::<TestBackend>(
+        let result = train_kge(
             &triples,
             5,
             1,
@@ -1100,7 +1092,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn kge_ranks_match_cpu_reference(mt: BurnModelType) {
         // TransE and RotatE burn scorers use squared L2 distance while the CPU
         // reference uses plain L2 -- a monotonic transform, so exact score
@@ -1147,19 +1139,18 @@ mod tests {
             let flat: Vec<f32> = rows.iter().flat_map(|r| r.iter().copied()).collect();
             Param::initialized(
                 ParamId::new(),
-                Tensor::<TestBackend, 2>::from_data(
+                Tensor::<2>::from_data(
                     burn::tensor::TensorData::new(flat, [rows.len(), cols]),
                     &device,
                 ),
             )
         };
-        let kge = BurnKge::<TestBackend> {
+        let kge = BurnKge {
             entity: param(&ent_rows),
             relation: param(&rel_rows),
         };
 
-        let scores =
-            |t: Tensor<TestBackend, 2>| -> Vec<f32> { t.into_data().to_vec::<f32>().unwrap() };
+        let scores = |t: Tensor<2>| -> Vec<f32> { t.into_data().try_to_vec::<f32>().unwrap() };
         // Best-to-worst entity order. Burn: higher score first. CPU: lower
         // distance first. Ties broken by ascending entity index in both.
         let rank_by = |v: &[f32], higher_is_better: bool| -> Vec<usize> {
@@ -1178,7 +1169,7 @@ mod tests {
         for r in 0..nr {
             for x in 0..ne {
                 let ids = |i: usize| {
-                    Tensor::<TestBackend, 1, Int>::from_data(
+                    Tensor::<1, Int>::from_data(
                         burn::tensor::TensorData::new(vec![i as i64], [1]),
                         &device,
                     )
@@ -1205,18 +1196,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_transe_ranks_match_cpu_reference() {
         kge_ranks_match_cpu_reference(BurnModelType::TransE);
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_rotate_ranks_match_cpu_reference() {
         kge_ranks_match_cpu_reference(BurnModelType::RotatE);
     }
 
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn kge_achieves_nonzero_mrr(mt: BurnModelType) {
         // The chain 0->1->2->3->4 under a single relation is trivially learnable
         // by a translation/rotation model, so a trained burn scorer should rank
@@ -1230,7 +1221,7 @@ mod tests {
             lr: 0.01,
             ..BurnTrainConfig::default()
         };
-        let result = train_kge::<TestBackend>(&triples, 5, 1, mt, &config, &test_device());
+        let result = train_kge(&triples, 5, 1, mt, &config, &test_device());
         let scorer = result.to_scorer();
 
         let ds = crate::dataset::Dataset::new(
@@ -1258,19 +1249,19 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_transe_achieves_nonzero_mrr() {
         kge_achieves_nonzero_mrr(BurnModelType::TransE);
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_rotate_achieves_nonzero_mrr() {
         kge_achieves_nonzero_mrr(BurnModelType::RotatE);
     }
 
     #[test]
-    #[cfg(feature = "burn-ndarray")]
+    #[cfg(feature = "burn-flex")]
     fn burn_kge_to_scorer_builds_all_models() {
         let triples = vec![tid(0, 0, 1), tid(1, 0, 2)];
         let config = BurnTrainConfig {
@@ -1285,7 +1276,7 @@ mod tests {
             BurnModelType::ComplEx,
             BurnModelType::DistMult,
         ] {
-            let result = train_kge::<TestBackend>(&triples, 3, 1, mt, &config, &test_device());
+            let result = train_kge(&triples, 3, 1, mt, &config, &test_device());
             assert!(result.losses.iter().all(|l| l.is_finite()), "{mt:?}");
             let scorer = result.to_scorer();
             assert_eq!(scorer.num_entities(), 3, "{mt:?}");

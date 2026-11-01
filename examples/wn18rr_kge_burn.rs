@@ -9,12 +9,12 @@
 //! in CI that compiles or runs examples.
 //!
 //! Cost: trains all four models on full WN18RR (40943 entities, 173670
-//! triples). On Metal (`--features burn-ndarray,burn-wgpu`) ~30-60s per model
-//! (~3 min total); on CPU ndarray it is minutes per model. Shrink for a quick
-//! smoke run with `TRAIN_CAP=20000 DIM=32 EPOCHS=5`.
+//! triples). On Metal (`--features burn-flex,burn-wgpu`) ~30-60s per model
+//! (~3 min total); on the flex CPU backend it is minutes per model. Shrink for
+//! a quick smoke run with `TRAIN_CAP=20000 DIM=32 EPOCHS=5`.
 //!
-//! Run on Metal: `cargo run --release --features "burn-ndarray,burn-wgpu" --example wn18rr_kge_burn`
-//! (drop `burn-wgpu` for CPU ndarray).
+//! Run on Metal: `cargo run --release --features "burn-flex,burn-wgpu" --example wn18rr_kge_burn`
+//! (drop `burn-wgpu` for the CPU flex backend).
 //!
 //! Sample output (Metal, dim 50, 3 epochs, sampled eval over 200 candidates):
 //! ```text
@@ -34,13 +34,6 @@ use std::time::Instant;
 
 use tranz::burn_train::{train_kge, BurnModelType, BurnTrainConfig};
 use tranz::dataset::{self, FilterIndex, InternedDatasetExt};
-
-// Backend: Metal/Vulkan via wgpu when `burn-wgpu` is enabled, else CPU ndarray.
-// Run on Metal with: `--features "burn-ndarray,burn-wgpu"`.
-#[cfg(feature = "burn-wgpu")]
-type B = burn::backend::Autodiff<burn_wgpu::Wgpu>;
-#[cfg(not(feature = "burn-wgpu"))]
-type B = burn::backend::Autodiff<burn_ndarray::NdArray>;
 
 fn main() {
     let data = Path::new("data/WN18RR");
@@ -68,14 +61,10 @@ fn main() {
         interned.test.len()
     );
     let filter = FilterIndex::from_dataset(&interned);
-    #[cfg(feature = "burn-wgpu")]
-    let device = burn_wgpu::WgpuDevice::default();
-    #[cfg(not(feature = "burn-wgpu"))]
-    let device = burn_ndarray::NdArrayDevice::Cpu;
-    #[cfg(feature = "burn-wgpu")]
-    eprintln!("backend: wgpu (Metal/Vulkan)");
-    #[cfg(not(feature = "burn-wgpu"))]
-    eprintln!("backend: ndarray (CPU)");
+    // An enabled backend in priority order (GPUs before the CPU), unless
+    // `BURN_DEVICE` names one.
+    let device = burn::tensor::Device::default();
+    eprintln!("backend: {:?}", device);
 
     // Fast-but-real config: enough to show learning on real data, not SOTA
     // convergence. Raise dim/epochs for a serious run.
@@ -106,7 +95,7 @@ fn main() {
     ] {
         eprintln!("training {mt:?} ...");
         let start = Instant::now();
-        let result = train_kge::<B>(&interned.train, n_ent, n_rel, mt, &config, &device);
+        let result = train_kge(&interned.train, n_ent, n_rel, mt, &config, &device);
         let train_s = start.elapsed().as_secs_f64();
         let (l0, l1) = (result.losses[0], *result.losses.last().unwrap());
         let scorer = result.to_scorer();

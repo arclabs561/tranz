@@ -4,8 +4,9 @@ Each example answers one question and is runnable as-is. Examples that need a
 dataset are **data-gated**: they exit 0 with a message if the data is absent, so
 they are safe to compile/run in CI.
 
-Backend selection (Burn examples): `--features burn-ndarray` runs on CPU;
-add `burn-wgpu` to run on Metal/Vulkan (`--features "burn-ndarray,burn-wgpu"`).
+Backend selection (Burn examples): `--features burn-flex` runs on CPU (Burn's
+flex backend); add `burn-wgpu` to run on Metal/Vulkan
+(`--features "burn-flex,burn-wgpu"`).
 The feature names follow Burn's own convention (named after the backend, not the
 device class).
 
@@ -20,7 +21,7 @@ Cost: full WN18RR (40943 entities, 173670 triples); ~30-60s per model on Metal,
 minutes per model on CPU. Shrink with `TRAIN_CAP=20000 DIM=32 EPOCHS=5`.
 
 ```bash
-cargo run --release --features "burn-ndarray,burn-wgpu" --example wn18rr_kge_burn
+cargo run --release --features "burn-flex,burn-wgpu" --example wn18rr_kge_burn
 ```
 ```text
 model      train_s   loss[0]->loss[-1]      test_MRR   H@10
@@ -39,7 +40,7 @@ HNSW and runs cosine nearest-neighbour queries. (tranz produces *point*
 embeddings, so a vector index is the natural serving layer.)
 
 ```bash
-cargo run --release --features "burn-ndarray,burn-wgpu" --example wn18rr_vicinity
+cargo run --release --features "burn-flex,burn-wgpu" --example wn18rr_vicinity
 ```
 ```text
 indexed 40943 entity vectors in vicinity HNSW
@@ -50,10 +51,10 @@ nearest entities by cosine similarity (id: [neighbours]):
 
 ### `bench_wgpu`: how much faster is Metal than CPU?
 
-Times a Burn training epoch on wgpu (Metal) vs ndarray (CPU).
+Times a Burn training epoch on wgpu (Metal) vs the flex CPU backend.
 
 ```bash
-cargo run --release --features "burn-ndarray,burn-wgpu" --example bench_wgpu
+cargo run --release --features "burn-flex,burn-wgpu" --example bench_wgpu
 ```
 
 ## Utility (no ML backend needed)
