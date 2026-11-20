@@ -4,7 +4,7 @@ Knowledge graph embedding models.
 
 ```toml
 [dependencies]
-tranz = "0.8.0"
+tranz = "0.9"
 ```
 
 Dual-licensed under MIT or Apache-2.0.
@@ -142,6 +142,7 @@ into atomic link prediction calls composed with t-norm fuzzy logic
 use tranz::query::{Query, QueryConfig, answer_query_topk};
 use tranz::DistMult;
 
+// Randomly initialised here to show the API; load or train a model for real answers.
 let model = DistMult::new(1000, 50, 200);
 
 // 2-hop chain: entity 0 -rel 0-> V -rel 1-> ?
@@ -232,6 +233,7 @@ Highlights:
 
 - `wn18rr_kge_burn` trains all four models on real WN18RR with the Burn backend (Metal-accelerated) and reports MRR/Hits, the real-data check that the Burn trainers learn.
 - `wn18rr_vicinity` trains point embeddings and serves nearest-neighbour queries through a [vicinity](https://crates.io/crates/vicinity) HNSW index.
+- `cpu_parity_metric` trains and evaluates all four models on a small synthetic graph defined in the file. It needs no download, so it is the quickest end-to-end check: `cargo run --release --features burn-flex --example cpu_parity_metric`.
 - `score` is the smallest way to use a trained model; `bench_wgpu` times Metal vs CPU; `bench_scoring` and `bench_f32_vs_f64` measure the scoring hot path.
 
 ## Companion to subsume
